@@ -21,6 +21,19 @@ CacheSlide v1: Cross Position-Aware KV Cache Reuse for Faster Serving
 
 ## About
 
+### Modern vLLM implementation
+
+The new [standalone implementation in `modern/`](modern/README.md) targets
+**vLLM 0.29.0** and provides trained CoPE/LoRA artifacts, bounded CCPE calibration,
+request-local WCA selective execution, and SLIDE page indirection on native V1
+KV allocations. It is an experimental, separately installed Llama/full-attention
+Mistral path; see its [design and support boundaries](modern/docs/design.md).
+It does not replace the legacy tree below or claim reproduction of the paper's
+large-model performance results. Install and launch it outside this repository's
+legacy `vllm/` import path.
+
+### Legacy vLLM implementation
+
 This repository implements **CacheSlide** on top of **vLLM 0.8.5** (pinned) ([PyPI][1]), adding:
 
 * **Chunked (document-level) KV cache construction** and **cross-chunk reuse**
