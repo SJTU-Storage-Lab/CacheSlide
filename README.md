@@ -1,6 +1,8 @@
-# CacheSlide
+<p align="center">
+  <img src="CacheSlide.png" alt="CacheSlide — contextual KV cache reuse" width="560">
+</p>
 
-**Contextual, cross-position KV cache reuse for modern vLLM.**
+<p align="center"><strong>Contextual, cross-position KV cache reuse for modern vLLM.</strong></p>
 
 This repository implements [CacheSlide (FAST '26)](https://www.usenix.org/conference/fast26/presentation/liu-yang): Chunked Contextual Position Encoding (CCPE), Weighted Correction Attention (WCA), and SLIDE's load/write-decoupled KV slot management.
 
