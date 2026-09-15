@@ -1,0 +1,39 @@
+name: CacheSlide CPU and pinned engine contracts
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  cpu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check out the audited engine (source inspection only)
+        uses: actions/checkout@v4
+        with:
+          repository: vllm-project/vllm
+          ref: 98dff2a81d747d1dba01a47f939f48c3526d4206
+          path: .upstream-vllm
+      - name: Install CPU test environment
+        run: python -m pip install -c constraints/cpu-tests.txt '.[test]'
+      - name: Numerical, lifecycle and native source contracts
+        env:
+          CACHESLIDE_VLLM_SOURCE: ${{ github.workspace }}/.upstream-vllm
+        run: python -m pytest -q
+      - name: Lint
+        run: python -m ruff check src tests benchmarks
+      - name: One-command CPU workflow
+        run: ./run_cacheslide_benchmark.sh --smoke --output ./results/ci-smoke
+      - name: Keep workflow diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpu-smoke-results
+          path: results/ci-smoke/

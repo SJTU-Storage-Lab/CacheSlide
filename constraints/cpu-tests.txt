@@ -1,0 +1,7 @@
+# Known-good CPU verification tools, recorded 2026-09-15.
+# Native CUDA dependencies are governed by the pinned vLLM engine extra.
+torch==2.13.0
+safetensors==0.8.0
+pytest==9.1.1
+ruff==0.16.7
+numpy==2.5.3
