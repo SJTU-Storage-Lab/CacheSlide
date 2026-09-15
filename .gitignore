@@ -14,3 +14,6 @@ results/
 .cacheslide-cache/
 .DS_Store
 ._*
+runs/
+paper-assets/
+*.part

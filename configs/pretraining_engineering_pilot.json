@@ -1,0 +1,20 @@
+{
+  "max_steps": 20,
+  "learning_rate": 0.0002,
+  "weight_decay": 0,
+  "warmup_steps": 2,
+  "min_lr_ratio": 0.1,
+  "gradient_accumulation_steps": 2,
+  "max_grad_norm": 1,
+  "sequence_length": 512,
+  "rank": 8,
+  "max_positions": 256,
+  "query_chunk_size": 32,
+  "loss_chunk_size": 64,
+  "gradient_checkpointing": true,
+  "precision": "bfloat16",
+  "seed": 42,
+  "eval_every": 10,
+  "eval_max_sequences": 0,
+  "checkpoint_every": 10
+}

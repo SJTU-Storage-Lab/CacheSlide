@@ -14,6 +14,39 @@ The baseline is [vLLM 0.29.0](https://github.com/vllm-project/vllm/releases/tag/
 
 **This is experimental code, not a reproduced performance result.** CPU numerical, storage, request-lifecycle and tiny-model training tests are available. Native CUDA execution, large-model accuracy, and the paper's TTFT/SSD gains have not been established. See [validation](docs/validation.md), [design](docs/design.md), and the [paper-conformance audit](docs/paper_conformance.md).
 
+## Real model training and paper datasets
+
+The [pinned open assets](docs/open_assets.md) include an explicitly identified
+Mistral-7B engineering checkpoint, official HotpotQA, MSC and SWE-bench sources.
+They are acquired with official checksum verification; model weights and raw
+datasets are not silently embedded in Git. See the [HotpotQA preparation
+protocol](docs/hotpot_data_preparation.md) for separate training, NLL validation,
+calibration and held-out generation inputs.
+
+[Continued pretraining](docs/continued_pretraining.md) loads the real frozen
+safetensors backbone and optimizes CoPE plus attention LoRA using causal
+next-token loss. It supports BF16, gradient checkpointing, resumable optimizer
+state and held-out NLL. Mount the resulting combined artifact with `--adapter`;
+a generic runtime LoRA alone cannot enable CoPE. The checked-in 20-step pilot
+is a pipeline check, **not** a quality-qualified model or reproduced speedup.
+[Answer reporting](docs/reproduction_reporting.md) preserves actual generations
+and supports official HotpotQA answer F1/EM. Training loss, token agreement and
+blocking generation latency are not relabeled as task accuracy or TTFT.
+
+With the selected environment and its `paper` extra installed, a real-data pilot
+can be launched in one command:
+
+```bash
+python scripts/run_paper_pretraining.py \
+  --asset-root /workspace/Models/CacheSlide-paper-assets \
+  --output ./runs/mistral-hotpot-pilot --device cuda:0
+```
+
+This verifies every model shard before GPU work, prepares disjoint data, trains,
+and validates the saved adapter. Add `--download` to explicitly acquire missing
+assets first. It does not install dependencies, manage GPU reservations, or
+claim native-engine results. Stage logs and failures are retained.
+
 ## One-command benchmark
 
 Use Python 3.12 or newer. The launcher preserves caller-relative paths and never downloads model weights.
