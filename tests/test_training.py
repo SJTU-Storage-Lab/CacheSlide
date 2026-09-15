@@ -5,10 +5,10 @@ import torch
 import torch.nn.functional as F
 from safetensors.torch import load_file, save_file
 
-from cacheslide_vllm.artifacts import AdapterBundle, backbone_manifest
-from cacheslide_vllm.position import cope_attention
-from cacheslide_vllm.reference import ReferenceLlama
-from cacheslide_vllm.training import train_adapter
+from cacheslide_core.artifacts import AdapterBundle, backbone_manifest
+from cacheslide_core.position import cope_attention
+from cacheslide_core.reference import ReferenceLlama
+from cacheslide_core.training import train_adapter
 
 
 def tiny_checkpoint(path, *, tied=False, layers=2):

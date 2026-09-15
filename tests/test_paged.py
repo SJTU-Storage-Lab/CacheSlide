@@ -5,9 +5,9 @@ import pytest
 import torch
 
 import cacheslide_vllm.paged as paged
+from cacheslide_core.position import CoPE, cope_attention
+from cacheslide_core.storage import CacheCapacityError, StaleCompletionError
 from cacheslide_vllm.paged import NativePagedKV
-from cacheslide_vllm.position import CoPE, cope_attention
-from cacheslide_vllm.storage import CacheCapacityError, StaleCompletionError
 
 
 def fixture_arena(max_selected=2):

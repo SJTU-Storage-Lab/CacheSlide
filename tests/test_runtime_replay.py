@@ -5,8 +5,8 @@ from dataclasses import replace
 import pytest
 import torch
 
+from cacheslide_core.runtime import CacheSlideRuntime
 from cacheslide_vllm.integration import StepContext
-from cacheslide_vllm.runtime import CacheSlideRuntime
 from tests.test_runtime import build_runtime, decode, plan, prefill
 from tests.test_runtime_paged import CPUBlockPool, bind
 

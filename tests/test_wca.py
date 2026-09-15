@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from cacheslide_vllm.wca import (
+from cacheslide_core.wca import (
     WCAConfig,
     WCANumericalError,
     WCAState,

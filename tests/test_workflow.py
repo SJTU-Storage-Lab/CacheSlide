@@ -357,7 +357,7 @@ def test_shell_works_outside_repo_without_cwd_package_shadowing(tmp_path):
     result = subprocess.run(
         [
             "bash",
-            str(repository / "run_cacheslide_benchmark.sh"),
+            str(repository / "run_cacheslide_vllm_benchmark.sh"),
             "--help",
         ],
         cwd=tmp_path,

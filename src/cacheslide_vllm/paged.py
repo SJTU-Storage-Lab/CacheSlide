@@ -15,7 +15,7 @@ from concurrent.futures import Future
 
 import torch
 
-from .slide import LayerSlotMap, SlotWrite
+from cacheslide_core.slide import LayerSlotMap, SlotWrite
 
 
 def _indices(value: Sequence[int] | torch.Tensor, name: str) -> list[int]:

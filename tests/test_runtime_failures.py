@@ -3,8 +3,8 @@ from dataclasses import replace
 import pytest
 import torch
 
-from cacheslide_vllm.runtime import CacheSlideRuntime
-from cacheslide_vllm.wca import WCANumericalError, WCAState
+from cacheslide_core.runtime import CacheSlideRuntime
+from cacheslide_core.wca import WCANumericalError, WCAState
 
 from .test_runtime import build_runtime, plan, prefill
 
@@ -220,6 +220,32 @@ def test_dtype_is_part_of_persistent_cache_identity(tmp_path):
             other.close()
         with pytest.raises(ValueError, match="model_dtype"):
             CacheSlideRuntime(other_settings, runtime.bundle, model_dtype="float32")
+    finally:
+        runtime.close()
+
+
+def test_engine_execution_identity_separates_persistent_caches(tmp_path):
+    _, runtime = build_runtime(tmp_path)
+    try:
+        other = CacheSlideRuntime(
+            replace(runtime.settings, cache_root=str(tmp_path / "sglang-cache")),
+            runtime.bundle,
+            model_dtype=torch.float32,
+            execution_identity="sglang:0.5.19:audited-source",
+        )
+        try:
+            assert runtime.identity != other.identity
+            assert runtime._key(plan(), 0, "kv") != other._key(plan(), 0, "kv")
+        finally:
+            other.close()
+        for invalid in (None, "", 19):
+            with pytest.raises(ValueError, match="execution_identity"):
+                CacheSlideRuntime(
+                    runtime.settings,
+                    runtime.bundle,
+                    model_dtype=torch.float32,
+                    execution_identity=invalid,
+                )
     finally:
         runtime.close()
 

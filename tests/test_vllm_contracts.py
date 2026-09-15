@@ -122,6 +122,8 @@ def test_embedding_tying_requires_actual_booleans(side, invalid):
         ("mlp_bias", True),
         ("qkv_bias", True),
         ("bias", True),
+        ("final_logit_softcapping", 30.0),
+        ("attn_logit_softcapping", 50.0),
     ],
 )
 def test_native_overrides_cannot_enable_untrained_structure(field, value):

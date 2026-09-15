@@ -1,12 +1,12 @@
 import pytest
 import torch
 
-from cacheslide_vllm.attention import (
+from cacheslide_core.attention import (
     CanonicalPositionPolicy,
     SelectedAssociationPolicy,
 )
-from cacheslide_vllm.contracts import RequestPlan
-from cacheslide_vllm.position import (
+from cacheslide_core.contracts import RequestPlan
+from cacheslide_core.position import (
     CCPEPositionError,
     CCPEProfile,
     ChunkIdentity,

@@ -6,14 +6,14 @@ import torch
 from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 
-from cacheslide_vllm.artifacts import (
+from cacheslide_core.artifacts import (
     AdapterBundle,
     AttentionAdapter,
     file_sha256,
     save_adapter,
 )
-from cacheslide_vllm.contracts import RequestPlan, digest
-from cacheslide_vllm.profiles import ProfileBundle, calibrate_profiles
+from cacheslide_core.contracts import RequestPlan, digest
+from cacheslide_core.profiles import ProfileBundle, calibrate_profiles
 
 
 @pytest.fixture
@@ -132,7 +132,7 @@ def test_calibrate_genuine_contexts_canonical_lookup_and_safe_export(
     tiny_artifacts,
     tmp_path,
 ):
-    from cacheslide_vllm.reference import ReferenceLlama
+    from cacheslide_core.reference import ReferenceLlama
 
     model_dir, adapter_dir, adapter = tiny_artifacts
     short, long = make_plan(), make_plan((3, 4, 8))
@@ -198,7 +198,7 @@ def test_calibrate_genuine_contexts_canonical_lookup_and_safe_export(
 def test_budget_rejected_before_model_or_trace_allocation(
     tiny_artifacts, tmp_path, monkeypatch
 ):
-    from cacheslide_vllm.reference import ReferenceLlama
+    from cacheslide_core.reference import ReferenceLlama
 
     model_dir, adapter_dir, _ = tiny_artifacts
 

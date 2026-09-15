@@ -5,11 +5,11 @@ Example (after training/calibration and installing the pinned engine extra):
     --profiles /profiles --input cases.jsonl --cache-root /cache \
     --output /new-result-directory --run
 
-Reported latency is offline prefill plus one generated token by default. It is
+Reported latency is validated offline generation (four output tokens by default),
 not streaming TTFT. No engine, CUDA context, or GPU work is created without --run.
 """
 
-from cacheslide_vllm.cli import main
+from cacheslide_sglang.cli import main
 
 if __name__ == "__main__":
     import sys

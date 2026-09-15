@@ -40,7 +40,7 @@ def _nonnegative(value: str) -> int:
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
-        prog="run_cacheslide_benchmark.sh",
+        prog="run_cacheslide_vllm_benchmark.sh",
         description=(
             "Local checkpoint → real adapter training → CCPE calibration → "
             "populate/warmup → matched native recompute/reuse benchmark. "
@@ -381,7 +381,7 @@ def _install(args: argparse.Namespace, argv: list[str]) -> int:
     print(f"Creating isolated environment: {location}", file=sys.stderr, flush=True)
     venv.EnvBuilder(with_pip=True).create(location)
     python = location / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    requirement = str(repository) + ("" if args.smoke else "[engine]")
+    requirement = str(repository) + ("" if args.smoke else "[vllm]")
     requirements = [requirement]
     if not args.smoke:
         from .compat import compatibility_manifest

@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from cacheslide_vllm.storage import (
+from cacheslide_core.storage import (
     CacheCapacityError,
     CacheIntegrityError,
     StaleCompletionError,

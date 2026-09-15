@@ -20,16 +20,17 @@ from vllm.model_executor.models.llama import (
 )
 from vllm.model_executor.models.utils import extract_layer_index
 
-from .artifacts import AdapterBundle
+from cacheslide_core.artifacts import AdapterBundle
+from cacheslide_core.config import CacheSlideSettings
+from cacheslide_core.runtime import CacheSlideRuntime
+
 from .compat import (
     validate_engine_config,
     validate_native_model_config,
     verify_installed_vllm,
 )
-from .config import CacheSlideSettings
 from .integration import current_step
 from .paged import NativePagedKV
-from .runtime import CacheSlideRuntime
 
 
 class CacheSlideAttention(LlamaAttention):
@@ -93,7 +94,11 @@ class CacheSlideModel(LlamaModel):
             ]
         )
         self.cacheslide_runtime = CacheSlideRuntime(
-            settings, bundle, arena_factory=self._arena, model_dtype=parameter.dtype
+            settings,
+            bundle,
+            arena_factory=self._arena,
+            model_dtype=parameter.dtype,
+            execution_identity="vllm:0.29.0:98dff2a81d747d1dba01a47f939f48c3526d4206",
         )
         for layer, adapter in zip(self.layers, self.cacheslide_adapters, strict=True):
             layer.self_attn.bind(self.cacheslide_runtime, adapter)

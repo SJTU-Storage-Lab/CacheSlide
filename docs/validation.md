@@ -1,5 +1,9 @@
 # Validation: paper-conformance audit, 2026-09-15
 
+> This is the historical vLLM 0.3.0 validation record for `main` at `3f220b8`.
+> It does not describe the SGLang branch's current test count or GPU checks;
+> see [SGLang validation](sglang_validation.md) for those results.
+
 Environment: Python 3.12.14, Torch 2.13.0, macOS ARM64 CPU. CUDA was
 unavailable. These are correctness and integration-contract checks, not GPU
 performance measurements. See the [paper-conformance audit](paper_conformance.md)

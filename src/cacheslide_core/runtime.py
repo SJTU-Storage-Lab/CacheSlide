@@ -1,4 +1,4 @@
-"""Selective, request-local CacheSlide execution shared by CPU and native vLLM.
+"""Selective, request-local CacheSlide execution shared by reference and native engines.
 
 The immutable host cache stores only fixed-token K/V and per-layer input states.
 Hidden states are necessary for tokens promoted by the four-layer WCA gate.
@@ -21,8 +21,8 @@ from torch import Tensor
 from .artifacts import AdapterBundle
 from .attention import CanonicalPositionPolicy, SelectedAssociationPolicy
 from .config import CacheSlideSettings
+from .context import StepContext
 from .contracts import RequestPlan, digest
-from .integration import StepContext
 from .position import CCPEPositionError, cope_attention
 from .profiles import ProfileBundle
 from .storage import CacheCapacityError, CacheIntegrityError, TieredPageStore
@@ -67,7 +67,10 @@ class CacheSlideRuntime:
         *,
         arena_factory=None,
         model_dtype: torch.dtype | None = None,
+        execution_identity: str = "reference",
     ):
+        if not isinstance(execution_identity, str) or not execution_identity:
+            raise ValueError("execution_identity must be a nonempty string")
         if model_dtype is not None and not isinstance(model_dtype, torch.dtype):
             raise ValueError("model_dtype must be a torch dtype or None")
         self.settings = settings
@@ -90,6 +93,7 @@ class CacheSlideRuntime:
                 "format": "cacheslide-runtime-v2",
                 "ccpe_position_policy": settings.ccpe_position_policy,
                 "model_dtype": str(model_dtype) if model_dtype is not None else None,
+                "execution_identity": execution_identity,
             }
         )
         self.store = TieredPageStore(

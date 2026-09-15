@@ -2,8 +2,8 @@ from concurrent.futures import Future
 
 import pytest
 
-from cacheslide_vllm.slide import LayerSlotMap, SlotWrite, coalesce_slot_writes
-from cacheslide_vllm.storage import CacheCapacityError, StaleCompletionError
+from cacheslide_core.slide import LayerSlotMap, SlotWrite, coalesce_slot_writes
+from cacheslide_core.storage import CacheCapacityError, StaleCompletionError
 
 
 def test_coalesce_adjacent_slot_records():

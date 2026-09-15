@@ -6,8 +6,8 @@ from dataclasses import replace
 import pytest
 import torch
 
+from cacheslide_core.runtime import CacheSlideRuntime
 from cacheslide_vllm.paged import NativePagedKV
-from cacheslide_vllm.runtime import CacheSlideRuntime
 from tests.test_runtime import build_runtime, decode, plan, prefill
 
 

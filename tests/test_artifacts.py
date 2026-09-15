@@ -5,7 +5,7 @@ import torch
 from safetensors.torch import load_file, save_file
 from torch import nn
 
-from cacheslide_vllm.artifacts import (
+from cacheslide_core.artifacts import (
     AdapterBundle,
     AttentionAdapter,
     backbone_files,

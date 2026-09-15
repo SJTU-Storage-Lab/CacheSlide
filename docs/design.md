@@ -1,5 +1,11 @@
 # Implementation design and paper interpretation
 
+> Historical vLLM 0.3.0 design, published on `main` at `3f220b8`. On this
+> branch, engine-independent modules have moved to `src/cacheslide_core/`;
+> vLLM adapters remain in `src/cacheslide_vllm/`. For the current SGLang
+> integration and commands, see [SGLang design](sglang_design.md) and the
+> [branch README](../README.md).
+
 This document describes executable behavior in `src/cacheslide_vllm/`, including choices where the [CacheSlide paper](https://www.usenix.org/conference/fast26/presentation/liu-yang) leaves implementation details ambiguous. Contextual position encoding follows [CoPE, arXiv:2405.18719, section 4](https://arxiv.org/abs/2405.18719). The implementation includes operational interpretations and bounded reference paths; it does not claim access to unpublished author weights or reproduction of the paper's performance results. The [paper-conformance audit](paper_conformance.md) maps individual paper claims, defaults, variants and missing integrations to executable tests.
 
 ## Package and engine boundary

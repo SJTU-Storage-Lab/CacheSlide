@@ -1,5 +1,10 @@
 # Paper-conformance audit
 
+> Retained vLLM 0.3.0 audit from `main` at `3f220b8`. Its algorithmic boundaries
+> also apply to the extracted `cacheslide_core`; native engine integration
+> differs. See [SGLang design](sglang_design.md) and
+> [SGLang validation](sglang_validation.md) for this branch's implementation.
+
 Scope: the standalone vLLM adaptation, version 0.3.0, audited 2026-09-15 against
 [CacheSlide, FAST '26](https://www.usenix.org/conference/fast26/presentation/liu-yang).
 Page references below give **printed proceedings page / PDF page including the

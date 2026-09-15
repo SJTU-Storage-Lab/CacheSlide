@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from cacheslide_vllm.contracts import RequestPlan
+from cacheslide_core.contracts import RequestPlan
 
 
 def request_metadata():

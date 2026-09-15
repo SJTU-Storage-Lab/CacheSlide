@@ -3,7 +3,7 @@ from dataclasses import replace
 import pytest
 import torch
 
-from cacheslide_vllm.position import (
+from cacheslide_core.position import (
     CCPEPositionError,
     CCPEProfile,
     ChunkIdentity,

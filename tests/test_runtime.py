@@ -5,14 +5,14 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
-from cacheslide_vllm.artifacts import AdapterBundle
-from cacheslide_vllm.config import CacheSlideSettings
-from cacheslide_vllm.contracts import RequestPlan
+from cacheslide_core.artifacts import AdapterBundle
+from cacheslide_core.config import CacheSlideSettings
+from cacheslide_core.contracts import RequestPlan
+from cacheslide_core.profiles import calibrate_profiles
+from cacheslide_core.reference import ReferenceLlama
+from cacheslide_core.runtime import CacheSlideRuntime
+from cacheslide_core.training import train_adapter
 from cacheslide_vllm.integration import StepContext
-from cacheslide_vllm.profiles import calibrate_profiles
-from cacheslide_vllm.reference import ReferenceLlama
-from cacheslide_vllm.runtime import CacheSlideRuntime
-from cacheslide_vllm.training import train_adapter
 
 
 def plan(dynamic=(3,), operation="recompute"):
