@@ -99,7 +99,12 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--cpu-budget-bytes", type=_positive, default=536_870_912)
     result.add_argument("--disk-budget-bytes", type=_positive, default=2_147_483_648)
     result.add_argument("--query-chunk-size", type=_positive, default=64)
-    result.add_argument("--calibration-layer", type=_nonnegative, default=1)
+    result.add_argument("--calibration-layer", type=_nonnegative, default=0)
+    result.add_argument(
+        "--ccpe-position-policy",
+        choices=("strict_contextual", "mixed_bias_override"),
+        default="strict_contextual",
+    )
     result.add_argument("--correction-fraction", type=float, default=0.26)
     result.add_argument(
         "--convergence-mode",
@@ -326,6 +331,7 @@ def native_stages(args: argparse.Namespace) -> list[tuple[str, list[str]]]:
             convergence_mode=args.convergence_mode,
             weight_update=args.weight_update,
             selected_attention=args.selected_attention,
+            ccpe_position_policy=args.ccpe_position_policy,
             warmup=args.warmup,
             repeats=args.repeats,
             backend="native",

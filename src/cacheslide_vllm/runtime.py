@@ -19,13 +19,14 @@ from safetensors.torch import save as save_tensors
 from torch import Tensor
 
 from .artifacts import AdapterBundle
+from .attention import CanonicalPositionPolicy, SelectedAssociationPolicy
 from .config import CacheSlideSettings
 from .contracts import RequestPlan, digest
 from .integration import StepContext
-from .position import ChunkIdentity, cope_attention
+from .position import CCPEPositionError, cope_attention
 from .profiles import ProfileBundle
 from .storage import CacheCapacityError, CacheIntegrityError, TieredPageStore
-from .wca import WCAState
+from .wca import WCANumericalError, WCAState
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +87,8 @@ class CacheSlideRuntime:
             {
                 "adapter": bundle.identity,
                 "profiles": self.profiles.identity if self.profiles else None,
-                "format": "cacheslide-runtime-v1",
+                "format": "cacheslide-runtime-v2",
+                "ccpe_position_policy": settings.ccpe_position_policy,
                 "model_dtype": str(model_dtype) if model_dtype is not None else None,
             }
         )
@@ -321,6 +323,8 @@ class CacheSlideRuntime:
                 "layer_rows": [],
                 "snapshot_bytes_written": 0,
                 "fallback": replaying and plan.operation == "reuse",
+                "position_policy_fallback": False,
+                "ccpe_position_policy": self.settings.ccpe_position_policy,
                 "decode_tokens": prefill_tokens - n,
                 "replayed_tokens": prefill_tokens - n,
                 "restored_rows": 0,
@@ -341,7 +345,13 @@ class CacheSlideRuntime:
             if prefill:
                 try:
                     output = self._prefill(model, hidden, positions, state)
-                except (ReuseFailure, CacheCapacityError, CacheIntegrityError) as exc:
+                except (
+                    ReuseFailure,
+                    CacheCapacityError,
+                    CacheIntegrityError,
+                    CCPEPositionError,
+                    WCANumericalError,
+                ) as exc:
                     # No token has been sampled. Recompute every layer from input.
                     logger.warning("CacheSlide full-prefill fallback: %s", exc)
                     if state.kv_future is not None:
@@ -357,6 +367,10 @@ class CacheSlideRuntime:
                     state.dense_kv.clear()
                     self._discard_uncommitted(state)
                     state.reuse = state.write_cache = False
+                    if isinstance(exc, CCPEPositionError):
+                        state.profiles.clear()
+                        state.metrics["position_policy_fallback"] = True
+                        state.metrics["ccpe_position_policy"] = "plain_cope_fallback"
                     state.wca = None
                     state.selected_at_layer = None
                     state.metrics.update(
@@ -498,15 +512,21 @@ class CacheSlideRuntime:
         sparse = state.reuse and state.wca is not None
         selected = positions[torch.isin(positions, fixed)] if sparse else positions[:0]
         arena = None
+        relocated = False
         if self.arena_factory is not None:
             arena = self.arena_factory(layer, n, len(selected))
             state.arenas[layer] = arena
-            if sparse and len(selected):
+            if (
+                sparse
+                and len(selected)
+                and (state.kv_future is not None and not state.kv_future.done())
+            ):
                 mask = torch.isin(positions, fixed)
                 # Stage fresh selected rows while the baseline host read is pending.
                 arena.promote_selected(
                     selected, k[mask], v[mask], load_future=state.kv_future
                 ).result()
+                relocated = True
         cached_k = k.new_zeros((n, *k.shape[1:]))
         cached_v = torch.zeros_like(cached_k)
         if state.reuse:
@@ -522,6 +542,13 @@ class CacheSlideRuntime:
             full_k[positions], full_v[positions] = update.fused_k, update.fused_v
             if arena is not None:
                 arena.write_prefill(cached_k, cached_v)
+                if len(selected) and not relocated:
+                    # Host-ready is not device-ready: write_prefill must finish
+                    # the actual baseline GPU writes before in-place promotion.
+                    mask = torch.isin(positions, fixed)
+                    arena.write_selected_ready(
+                        selected, update.fused_k[mask], update.fused_v[mask]
+                    )
                 arena.update_selected(positions, update.fused_k, update.fused_v)
         else:
             full_k, full_v = k, v
@@ -554,53 +581,29 @@ class CacheSlideRuntime:
         CCPE coordinates as the selected-token set changes between layers.
         """
         profile = state.profiles.get(layer)
-        fixed = torch.tensor(
-            state.plan.fixed_indices, device=q.device, dtype=torch.long
-        )
-        ordinal = {position: i for i, position in enumerate(state.plan.fixed_indices)}
-        keys = torch.arange(len(k), device=q.device)
-        output = []
-        group = q.shape[1] // k.shape[1]
-        expanded_k = k.repeat_interleave(group, 1).float()
-        expanded_v = v.repeat_interleave(group, 1).float()
-        chunks = tuple(ChunkIdentity(*entry) for entry in state.plan.fixed_layout)
-        for start in range(0, len(q), self.settings.query_chunk_size):
-            query = q[start : start + self.settings.query_chunk_size]
-            pos = positions[start : start + len(query)]
-            logits = torch.einsum("qhd,khd->hqk", query.float(), expanded_k)
-            logits *= q.shape[-1] ** -0.5
-            allowed = (keys[None, :] <= pos[:, None])[None].expand(q.shape[1], -1, -1)
-            contextual = adapter.cope.contextual_positions(logits, allowed)
-            rows = [i for i, p in enumerate(pos.tolist()) if p in ordinal]
-            if profile is not None and rows:
-                ordinals = torch.tensor([ordinal[int(pos[i])] for i in rows])
-                canonical = profile.lookup(
-                    chunks,
-                    ordinals,
-                    checkpoint_id=self.bundle.identity,
-                    trained_profile_version=profile.trained_profile_version,
-                    device=q.device,
-                    dtype=contextual.dtype,
-                )
-                for index, row in enumerate(rows):
-                    contextual[:, row, fixed] = canonical[:, index]
-            logits = logits + adapter.cope.positional_bias(query, contextual)
-            if (
-                state.selected_at_layer is not None
-                and self.settings.selected_attention == "updated_and_self"
-            ):
-                selected_query = torch.isin(pos, state.selected_at_layer)
-                updated_key = ~torch.isin(keys, fixed)
-                visibility = (
-                    ~selected_query[:, None]
-                    | updated_key[None, :]
-                    | (pos[:, None] == keys[None, :])
-                )
-                allowed = allowed & visibility[None]
-            if not torch.isfinite(logits).all():
-                raise ReuseFailure("nonfinite contextual attention logits")
-            probability = logits.masked_fill(~allowed, -torch.inf).softmax(-1)
-            output.append(
-                torch.einsum("hqk,khd->qhd", probability, expanded_v).to(v.dtype)
+        positional = (
+            CanonicalPositionPolicy(
+                state.plan,
+                profile,
+                self.bundle.identity,
+                self.settings.ccpe_position_policy,
             )
-        return torch.cat(output)
+            if profile is not None
+            else None
+        )
+        visibility = (
+            SelectedAssociationPolicy(state.plan.fixed_indices, state.selected_at_layer)
+            if state.selected_at_layer is not None
+            and self.settings.selected_attention == "updated_and_self"
+            else None
+        )
+        return cope_attention(
+            q,
+            k,
+            v,
+            adapter.cope,
+            positions,
+            positions_transform=positional,
+            visibility_transform=visibility,
+            query_chunk_size=self.settings.query_chunk_size,
+        )

@@ -18,13 +18,14 @@ class CacheSlideSettings:
     max_prompt_tokens: int = 32768
     max_profile_elements: int = 4_194_304
     query_chunk_size: int = 64
-    calibration_layer: int = 1
+    calibration_layer: int = 0
     correction_fraction: float = 0.26
     convergence_threshold: float = 0.12
     convergence_mode: str = "paper_cosine_lt"
     weight_update: str = "previous_layer"
     clamp_alpha: bool = False
     selected_attention: str = "updated_and_self"
+    ccpe_position_policy: str = "strict_contextual"
 
     @classmethod
     def from_mapping(cls, value: dict) -> CacheSlideSettings:
@@ -55,8 +56,20 @@ class CacheSlideSettings:
                 raise ValueError(f"{name} must be a positive integer")
         if type(self.calibration_layer) is not int or self.calibration_layer < 0:
             raise ValueError("calibration_layer must be a nonnegative layer index")
-        if self.selected_attention not in {"updated_and_self", "full_causal"}:
+        if not isinstance(
+            self.selected_attention, str
+        ) or self.selected_attention not in {
+            "updated_and_self",
+            "full_causal",
+        }:
             raise ValueError("unknown selected_attention policy")
+        if not isinstance(
+            self.ccpe_position_policy, str
+        ) or self.ccpe_position_policy not in {
+            "strict_contextual",
+            "mixed_bias_override",
+        }:
+            raise ValueError("unknown ccpe_position_policy")
         self.wca_config()
 
     def wca_config(self) -> WCAConfig:

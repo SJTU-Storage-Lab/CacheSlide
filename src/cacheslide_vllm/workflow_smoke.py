@@ -199,6 +199,7 @@ def run_smoke(args, root: Path, manifest: dict, run_stage) -> dict:
             convergence_mode=args.convergence_mode,
             weight_update=args.weight_update,
             selected_attention=args.selected_attention,
+            ccpe_position_policy=args.ccpe_position_policy,
         ),
         bundle,
         model_dtype=torch.float32,
@@ -239,10 +240,19 @@ def run_smoke(args, root: Path, manifest: dict, run_stage) -> dict:
             if not torch.isfinite(first_logits).all():
                 raise WorkflowError("CPU smoke produced nonfinite prefill logits")
             metrics = dict(runtime.last_metrics)
+            guarded = (
+                args.ccpe_position_policy == "strict_contextual"
+                and metrics["position_policy_fallback"]
+            )
+            if guarded:
+                expected = model(torch.tensor(request.token_ids))[-1]
+                torch.testing.assert_close(first_logits, expected, atol=3e-6, rtol=3e-6)
             if operation == "reuse" and not (
-                metrics["cache_hit"] and not metrics["fallback"]
+                (metrics["cache_hit"] and not metrics["fallback"]) or guarded
             ):
-                raise WorkflowError("CPU smoke reuse missed or fell back")
+                raise WorkflowError(
+                    "CPU smoke reuse missed without verified safety fallback"
+                )
             records.append(
                 {
                     "request_id": request_id,
@@ -271,10 +281,11 @@ def run_smoke(args, root: Path, manifest: dict, run_stage) -> dict:
     finally:
         runtime.close()
     reused = [record for record in records if record["operation"] == "reuse"]
+    hits = [record for record in reused if record["runtime_metrics"]["cache_hit"]]
     if not all(
         record["runtime_metrics"]["computed_token_layers"]
         < record["runtime_metrics"]["dense_token_layers"]
-        for record in reused
+        for record in hits
     ):
         raise WorkflowError("CPU smoke did not demonstrate selective token-layer work")
     with (root / "raw_outputs.jsonl").open("x") as stream:
@@ -293,7 +304,13 @@ def run_smoke(args, root: Path, manifest: dict, run_stage) -> dict:
         "adapter_identity": bundle.identity,
         "requests": len(records),
         "reuse_requests": len(reused),
-        "shifted_nonprefix_reuse_passed": True,
+        "shifted_nonprefix_reuse_passed": len(hits) == len(reused),
+        "cache_hit_requests": len(hits),
+        "ccpe_position_policy": args.ccpe_position_policy,
+        "calibration_layer": args.calibration_layer,
+        "guarded_fallback_requests": sum(
+            record["runtime_metrics"]["position_policy_fallback"] for record in records
+        ),
         "unchanged_prefill_logits_close": True,
         "max_tokens": args.max_tokens,
         "decode_steps_per_request": args.max_tokens - 1,

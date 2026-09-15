@@ -1,5 +1,6 @@
 """CPU execution of the real runtime and packed native KV adapter, without vLLM."""
 
+from concurrent.futures import Future
 from dataclasses import replace
 
 import pytest
@@ -59,9 +60,12 @@ class CPUBlockPool:
 
 
 @pytest.mark.parametrize("promote_at_gate", [False, True])
+@pytest.mark.parametrize("load_ready", [False, True])
 def test_dense_and_native_paged_runtime_match_through_shift_reuse_and_decode(
     tmp_path,
     promote_at_gate,
+    load_ready,
+    monkeypatch,
 ):
     """Actual native-hole consumption must preserve every logical KV and logit."""
     overrides = (
@@ -77,6 +81,28 @@ def test_dense_and_native_paged_runtime_match_through_shift_reuse_and_decode(
     )
     pool = CPUBlockPool(native)
     native.arena_factory = pool
+    original_load = native.store.submit_load
+
+    class DeferredLoad(Future):
+        # Deterministically keep the host completion unobserved until result().
+        def __init__(self, loaded):
+            super().__init__()
+            self.loaded = loaded
+
+        def result(self, timeout=None):
+            if not self.done():
+                self.set_result(self.loaded.result(timeout=timeout))
+            return super().result(timeout=timeout)
+
+    def controlled_load(key):
+        loaded = original_load(key)
+        if not load_ready:
+            return DeferredLoad(loaded)
+        ready = Future()
+        ready.set_result(loaded.result())
+        return ready
+
+    monkeypatch.setattr(native.store, "submit_load", controlled_load)
     try:
         assert dense.identity == native.identity
         requests = (
@@ -113,10 +139,10 @@ def test_dense_and_native_paged_runtime_match_through_shift_reuse_and_decode(
                 == dense.last_metrics["restored_rows"]
             )
         capacities = {
-            layer: arena.stats()["sidecar_capacity_slots"]
+            layer: arena.stats()["sidecar_allocated_slots"]
             for layer, arena in arenas.items()
         }
-        assert sum(capacities.values()) > 0
+        assert (sum(capacities.values()) == 0) is load_ready
         decode_steps = max(capacities.values()) + 3
         for index in range(decode_steps):
             token = int(expected[-1].argmax())
@@ -146,7 +172,7 @@ def test_dense_and_native_paged_runtime_match_through_shift_reuse_and_decode(
             assert stats["native_pool_capacity_slots"] == 32
             assert stats["native_pool_capacity_delta"] == 0
             assert stats["native_pool_blocks_released"] == 0
-            assert stats["sidecar_capacity_slots"] == capacities[layer]
+            assert stats["sidecar_allocated_slots"] == capacities[layer]
             assert torch.all(pool.backing[layer][..., 1::2] == -999)
         assert pool.block_table_updates == 6 * decode_steps
         assert len(pool.created) == 6 * len(requests)

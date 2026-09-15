@@ -111,6 +111,9 @@ def build_runtime(tmp_path, **settings_overrides):
         query_chunk_size=2,
         cpu_budget_bytes=32768,
         disk_budget_bytes=1048576,
+        # Explicit engineering variant used to exercise nonzero WCA candidates.
+        calibration_layer=1,
+        ccpe_position_policy="mixed_bias_override",
     )
     settings.update(settings_overrides)
     runtime = CacheSlideRuntime(

@@ -14,11 +14,104 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import torch
 from torch import Tensor, nn
+
+
+class CCPEPositionError(ValueError):
+    """A canonical substitution does not define a valid contextual path."""
+
+
+def validate_contextual_path(
+    positions: Tensor,
+    query_positions: Tensor,
+    key_positions: Tensor,
+    *,
+    attention_mask: Tensor | None = None,
+    atol: float = 1e-6,
+) -> None:
+    """Check necessary causal CoPE path constraints without modifying tensors.
+
+    On consecutive causal keys, reverse sums of sigmoid gates are nonincreasing
+    and differ by at most one, including after saturation. Across missing key
+    coordinates the upper bound is their distance, allowing a genuine projected
+    trace with retained intervening gates. Each causal count is also bounded by
+    the number of token coordinates through the query (in particular, self <= 1).
+
+    Only gate-enabled causal entries and their adjacent pairs are checked.
+    Masked/future entries need not be zero: they do not enter attention. This is
+    a structural validity check, not proof that a substituted path came from the
+    *current* Q/K gates. Pass the full actual key coordinate frame when checking
+    hybrid fixed/dynamic substitutions, not compact canonical fixed ordinals.
+    ``atol`` is augmented by local floating-point roundoff: subtracting rounded
+    cumulative counts can otherwise exceed one by an ulp at a binade boundary.
+    """
+    if (
+        not isinstance(positions, Tensor)
+        or positions.ndim != 3
+        or not positions.is_floating_point()
+        or positions.shape[0] < 1
+        or positions.shape[2] < 1
+        or not torch.isfinite(positions).all()
+    ):
+        raise CCPEPositionError("positions must be finite floating [head,query,key]")
+    if (
+        isinstance(atol, bool)
+        or not isinstance(atol, (int, float))
+        or not math.isfinite(atol)
+        or atol < 0
+    ):
+        raise CCPEPositionError("atol must be finite and nonnegative")
+    for name, coordinates, size in (
+        ("query_positions", query_positions, positions.shape[1]),
+        ("key_positions", key_positions, positions.shape[2]),
+    ):
+        if not isinstance(coordinates, Tensor):
+            raise CCPEPositionError(f"{name} must be an int64 tensor")
+        try:
+            _positions(name, coordinates, size, positions.device)
+        except ValueError as error:
+            raise CCPEPositionError(str(error)) from error
+    if key_positions.numel() > 1 and not (key_positions[1:] > key_positions[:-1]).all():
+        raise CCPEPositionError("key_positions must be strictly increasing")
+    causal = key_positions[None, :] <= query_positions[:, None]
+    valid = causal.unsqueeze(0).expand(positions.shape[0], -1, -1)
+    if attention_mask is not None:
+        if (
+            not isinstance(attention_mask, Tensor)
+            or attention_mask.dtype != torch.bool
+            or attention_mask.device != positions.device
+            or attention_mask.shape
+            not in (
+                positions.shape[1:],
+                (1, *positions.shape[1:]),
+                positions.shape,
+            )
+        ):
+            raise CCPEPositionError(
+                "attention_mask must be bool [query,key] or [head,query,key]"
+            )
+        valid = valid & attention_mask
+    rounding = torch.finfo(positions.dtype).eps * positions.abs()
+    if ((positions < -(atol + rounding)) & valid).any():
+        raise CCPEPositionError("causal contextual positions must be nonnegative")
+    # Subtraction in integer coordinates avoids losing adjacent token distances
+    # when low-precision attention uses large absolute token positions.
+    available = query_positions[:, None] - key_positions[None, :]
+    available = available.to(_accumulation_dtype(positions)).clamp_min(-1) + 1
+    if ((positions > available.unsqueeze(0) + atol + rounding) & valid).any():
+        raise CCPEPositionError("causal contextual count exceeds available gates")
+    pairs = valid[..., :-1] & valid[..., 1:]
+    differences = positions[..., :-1] - positions[..., 1:]
+    gaps = key_positions[1:] - key_positions[:-1]
+    pair_tolerance = atol + rounding[..., :-1] + rounding[..., 1:]
+    if ((differences < -pair_tolerance) & pairs).any():
+        raise CCPEPositionError("causal contextual path must be nonincreasing")
+    if ((differences > gaps + pair_tolerance) & pairs).any():
+        raise CCPEPositionError("causal contextual path exceeds one gate per token")
 
 
 def _rows(name: str, tensor: Tensor) -> None:
@@ -219,6 +312,8 @@ class CoPE(nn.Module):
         At integer interior positions, ceil(p) equals floor(p) and incorrectly
         erases the position/gate gradient. The floor-plus-one convention keeps
         the right-hand interpolation slope, including at exact integer counts.
+        This is an explicit gradient convention, not the literal ceil/floor
+        code in CoPE Appendix B; their forward values agree at integer knots.
         """
         _rows("query", query)
         if query.shape[-1] != self.head_dim:
@@ -317,6 +412,8 @@ def cope_attention(
     attention_mask: Tensor | None = None,
     visibility_mask: Tensor | None = None,
     fixed_positions: Tensor | None = None,
+    positions_transform: Callable[[Tensor, Tensor, Tensor], Tensor] | None = None,
+    visibility_transform: Callable[[Tensor, Tensor], Tensor] | None = None,
     query_chunk_size: int = 128,
     return_positions: bool = False,
 ) -> Tensor | tuple[Tensor, Tensor]:
@@ -328,6 +425,14 @@ def cope_attention(
     ``attention_mask`` excludes keys from both gates and attention (e.g. padding).
     ``visibility_mask`` restricts attention only, after contextual gate counting;
     use this for CacheSlide's dynamic-token-plus-self updated associations.
+    Optional transforms run per query chunk. ``positions_transform`` receives
+    the causal contextual positions and actual query/key coordinates, and must
+    return floating positions with exactly the same shape, device and dtype.
+    ``visibility_transform`` receives those coordinates and returns a bool
+    [query,key] or [head,query,key] attention-only mask. Each transform excludes
+    its corresponding precomputed tensor argument. The order is causal gates,
+    position transform, learned bias, visibility transform, masked softmax.
+    Structural path validation is an explicit policy choice of the caller.
     """
     _qk_layout(query, key)
     _rows("value", value)
@@ -339,6 +444,20 @@ def cope_attention(
         raise ValueError("K/V token count, heads, dtype and device must match")
     if not isinstance(query_chunk_size, int) or query_chunk_size < 1:
         raise ValueError("query_chunk_size must be a positive integer")
+    if positions_transform is not None:
+        if not callable(positions_transform):
+            raise CCPEPositionError("positions_transform must be callable")
+        if fixed_positions is not None:
+            raise CCPEPositionError(
+                "positions_transform and fixed_positions are mutually exclusive"
+            )
+    if visibility_transform is not None:
+        if not callable(visibility_transform):
+            raise ValueError("visibility_transform must be callable")
+        if visibility_mask is not None:
+            raise ValueError(
+                "visibility_transform and visibility_mask are mutually exclusive"
+            )
     _positions("query_positions", query_positions, query.shape[0], query.device)
     if key_positions is None:
         key_positions = torch.arange(key.shape[0], device=key.device)
@@ -378,16 +497,43 @@ def cope_attention(
             if fixed_positions is None
             else fixed_positions[:, start:end]
         )
+        if positions_transform is not None:
+            transformed = positions_transform(
+                positions, query_positions[start:end], key_positions
+            )
+            if (
+                not isinstance(transformed, Tensor)
+                or transformed.shape != positions.shape
+                or transformed.dtype != positions.dtype
+                or transformed.device != positions.device
+                or not torch.isfinite(transformed).all()
+                or (transformed < 0).any()
+                or (transformed > cope.max_positions - 1).any()
+            ):
+                raise CCPEPositionError(
+                    "positions_transform must return bounded finite positions "
+                    "with the contextual shape, dtype and device"
+                )
+            positions = transformed
         logits = logits + cope.positional_bias(q, positions)
         if not torch.isfinite(logits).all():
             raise ValueError("contextual attention logits are not finite")
+        chunk_visibility = None
         if visibility_mask is not None:
+            chunk_visibility = visibility_mask[..., start:end, :]
+        elif visibility_transform is not None:
+            chunk_visibility = visibility_transform(
+                query_positions[start:end], key_positions
+            )
+            if not isinstance(chunk_visibility, Tensor):
+                raise ValueError("visibility_transform must return a bool tensor")
+        if chunk_visibility is not None:
             visibility, _ = _allowed(
                 q,
                 key,
                 query_positions[start:end],
                 key_positions,
-                visibility_mask[..., start:end, :],
+                chunk_visibility,
             )
             allowed = allowed & visibility
         # softmax of all -inf is undefined; use zero logits then mask its weights.

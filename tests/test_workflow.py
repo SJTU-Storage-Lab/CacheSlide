@@ -384,6 +384,10 @@ def test_real_cpu_smoke_trains_calibrates_reuses_and_decodes(tmp_path, capsys):
                 "1",
                 "--max-tokens",
                 "4",
+                "--ccpe-position-policy",
+                "mixed_bias_override",
+                "--calibration-layer",
+                "1",
             ]
         )
         == 0
@@ -418,3 +422,27 @@ def test_real_cpu_smoke_trains_calibrates_reuses_and_decodes(tmp_path, capsys):
     assert [stage["name"] for stage in manifest["stages"]] == ["train", "calibrate"]
     assert all(stage["returncode"] == 0 for stage in manifest["stages"])
     assert "vllm" not in sys.modules
+
+
+def test_default_cpu_smoke_verifies_strict_position_fallback(tmp_path, capsys):
+    assert (
+        workflow.main(
+            [
+                "--smoke",
+                "--output",
+                str(tmp_path / "strict-smoke"),
+                "--warmup",
+                "0",
+                "--repeats",
+                "1",
+            ]
+        )
+        == 0
+    )
+    summary = json.loads(capsys.readouterr().out)["result"]
+    assert summary["correctness_passed"]
+    assert summary["ccpe_position_policy"] == "strict_contextual"
+    assert summary["calibration_layer"] == 0
+    assert summary["guarded_fallback_requests"] > 0
+    assert not summary["shifted_nonprefix_reuse_passed"]
+    assert summary["baseline_over_reuse_latency_ratio"] is None

@@ -113,9 +113,11 @@ class NativePagedKV:
             allocation_floor=self.native_total_slots,
             max_slots=self.native_total_slots + max_selected,
         )
-        shape = (max_selected, self.kv_heads, self.head_dim)
-        self._side_key = cache.new_empty(shape)
-        self._side_value = cache.new_empty(shape)
+        # The ready-load branch needs no extra KV copy or device allocation.
+        # Reserve only a logical capacity; allocate lazily on first relocation.
+        self._side_key: torch.Tensor | None = None
+        self._side_value: torch.Tensor | None = None
+        self._baseline_ready: set[int] = set()
         self._loads: list[Future] = []
         self._promotions: list[Future] = []
         self._selected: set[int] = set()
@@ -123,6 +125,7 @@ class NativePagedKV:
         self._hole_reuses = 0
         self._native_binds = 0
         self._canonical_mirrors = 0
+        self._ready_inplace_writes = 0
 
     def _table(self, block_table: Sequence[int] | torch.Tensor) -> tuple[int, ...]:
         if isinstance(block_table, torch.Tensor):
@@ -221,6 +224,13 @@ class NativePagedKV:
             self.cache[blocks, :, offsets, : self.head_dim] = key[selected]
             self.cache[blocks, :, offsets, self.head_dim :] = value[selected]
         if extra_rows:
+            if self._side_key is None:
+                shape = (self.max_selected, self.kv_heads, self.head_dim)
+                self._side_key, self._side_value = (
+                    self.cache.new_empty(shape),
+                    self.cache.new_empty(shape),
+                )
+            assert self._side_value is not None
             selected = torch.tensor(extra_rows, device=device)
             extra = torch.tensor(
                 [slots[row] - self.native_total_slots for row in extra_rows],
@@ -250,12 +260,16 @@ class NativePagedKV:
             slots = [self._canonical[token] for token in positions]
             if self._shared.intersection(slots):
                 raise ValueError("baseline writes cannot mutate shared native slots")
-            try:
-                self._write_slots(slots, key, value)
-                _completion_future(self.cache.device).result()
-            except BaseException:
-                self.slot_map.invalidate()
-                raise
+            with self.slot_map.write_guard(slots):
+                try:
+                    self._write_slots(slots, key, value)
+                    _completion_future(self.cache.device).result()
+                except BaseException:
+                    self.slot_map.invalidate()
+                    raise
+            # A completed host read is not evidence of native baseline readiness.
+            # Only this completed physical device write can establish that fact.
+            self._baseline_ready.update(positions)
 
     load_baseline = write
 
@@ -314,6 +328,50 @@ class NativePagedKV:
             return promotion
 
     stage_selected = promote_selected
+
+    def write_selected_ready(
+        self,
+        logical_positions: Sequence[int] | torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+    ) -> dict[int, int]:
+        """Load-first branch: update original slots without a sidecar or holes.
+
+        The entire prompt baseline must have completed ``write``/``write_prefill``
+        on this arena's device. A host Future becoming ready cannot establish
+        this precondition. Required slots must remain original, exclusive, and
+        unpinned. This method waits for actual device completion; a partial or
+        failed nontransactional copy retires the arena for full-prefill fallback.
+        Further fused updates use ``update_selected``; the pending-load branch
+        continues to use ``promote_selected``.
+        """
+        positions = _indices(logical_positions, "logical_positions")
+        self._records(positions, key, value)
+        with self._mutex:
+            mapping = self.slot_map.snapshot()
+            self._check_loads()
+            self._check_promotions()
+            if self._decoded:
+                raise RuntimeError("ready selected writes must precede decode")
+            if len(self._baseline_ready) != self.prompt_length:
+                raise RuntimeError("native baseline device writes must complete first")
+            if not set(positions).issubset(self._canonical):
+                raise ValueError("ready selected tokens require original native slots")
+            if self._selected.intersection(positions) or any(
+                mapping[token] != self._canonical[token] for token in positions
+            ):
+                raise ValueError("already selected tokens must use update_selected")
+            slots = [self._canonical[token] for token in positions]
+            with self.slot_map.write_guard(slots):
+                try:
+                    self._write_slots(slots, key, value)
+                    _completion_future(self.cache.device).result()
+                except BaseException:
+                    self.slot_map.invalidate()
+                    raise
+            self._selected.update(positions)
+            self._ready_inplace_writes += len(positions)
+            return self.slot_map.snapshot()
 
     def update_selected(
         self,
@@ -401,6 +459,7 @@ class NativePagedKV:
                 key[rows] = self.cache[blocks, :, offsets, : self.head_dim]
                 value[rows] = self.cache[blocks, :, offsets, self.head_dim :]
             if extra_rows:
+                assert self._side_key is not None and self._side_value is not None
                 rows = torch.tensor(extra_rows, device=device)
                 extra = torch.tensor(
                     [slots[row] - self.native_total_slots for row in extra_rows],
@@ -424,6 +483,8 @@ class NativePagedKV:
         A new decode row is also mirrored into its own canonical native slot.
         Old selected rows displaced by hole reuse remain available only through
         this map, so subsequent attention must continue using ``gather``.
+        Neither the new token mapping nor its destinations are readable until
+        all device writes complete. A failed partial copy retires this arena.
         """
         if type(token) is not int or token < 0:
             raise ValueError("decode token must be a nonnegative integer")
@@ -448,18 +509,13 @@ class NativePagedKV:
                 raise ValueError(
                     "decode native slot aliases an existing canonical token"
                 )
-            chosen = self.slot_map.bind_decode(
+            with self.slot_map.decode_write_guard(
                 token, canonical_slot, reuse_vacated=True
-            )
-            try:
+            ) as chosen:
                 self._write_slots([chosen], key, value)
                 if chosen != canonical_slot:
                     self._write_slots([canonical_slot], key, value)
                 _completion_future(self.cache.device).result()
-            except BaseException:
-                # A partially written canonical native record cannot be rolled back.
-                self.slot_map.invalidate()
-                raise
             self._hole_reuses += int(chosen != canonical_slot)
             self._canonical_mirrors += int(chosen != canonical_slot)
             self._native_binds += int(chosen == canonical_slot)
@@ -471,6 +527,37 @@ class NativePagedKV:
         with self._mutex:
             return self.slot_map.snapshot()
 
+    def page_metadata(self) -> tuple[dict[str, int | bool], ...]:
+        """Actual mapped physical pages; selected counts follow relocation.
+
+        Counts describe this arena only, never immutable reusable snapshots.
+        A dirty page contains selected tokens; this says nothing about whether
+        an SSD copy exists or is current. No native block is released here.
+        """
+        with self._mutex:
+            return self.slot_map.page_metadata(self.block_size, self._selected)
+
+    def spill_order(self) -> tuple[int, ...]:
+        """Advisory clean-first, descending-selected-count physical page order.
+
+        Shared, pinned, and in-flight pages are excluded. This snapshot neither
+        reserves pages nor performs spill/write coalescing/eviction. Native pool
+        ownership remains with vLLM; a future residency owner must revalidate
+        guards and complete backing writes before retiring any device records.
+        """
+        candidates = [page for page in self.page_metadata() if page["spill_eligible"]]
+        return tuple(
+            page["page_id"]
+            for page in sorted(
+                candidates,
+                key=lambda page: (
+                    page["dirty"],
+                    -page["selected_count"],
+                    page["page_id"],
+                ),
+            )
+        )
+
     def stats(self) -> dict[str, int]:
         with self._mutex:
             return {
@@ -479,6 +566,10 @@ class NativePagedKV:
                 "decode_native_bind": self._native_binds,
                 "canonical_mirror_writes": self._canonical_mirrors,
                 "sidecar_capacity_slots": self.max_selected,
+                "sidecar_allocated_slots": (
+                    self.max_selected if self._side_key is not None else 0
+                ),
+                "selected_ready_inplace_writes": self._ready_inplace_writes,
                 "native_pool_capacity_slots": self.native_total_slots,
                 "native_pool_capacity_blocks": self.cache.shape[0],
                 "native_pool_capacity_delta": 0,

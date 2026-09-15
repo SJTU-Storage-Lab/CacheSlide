@@ -3,7 +3,14 @@ from dataclasses import replace
 import pytest
 import torch
 
-from cacheslide_vllm.position import CCPEProfile, ChunkIdentity, CoPE, cope_attention
+from cacheslide_vllm.position import (
+    CCPEPositionError,
+    CCPEProfile,
+    ChunkIdentity,
+    CoPE,
+    cope_attention,
+    validate_contextual_path,
+)
 
 
 def test_gate_masking_reverse_cumsum_and_clamp():
@@ -162,6 +169,193 @@ def test_association_visibility_preserves_full_contextual_gate_counts():
         return_positions=True,
     )
     assert structurally_masked_trace[0, 0, 0] == 1
+
+
+def test_contextual_path_accepts_causal_clamped_gqa_and_ignores_future_entries():
+    cope = CoPE(2, 3)
+    q = torch.ones(3, 4, 2)
+    k = torch.zeros(5, 2, 2)
+    qpos, kpos = torch.tensor([4, 0, 2]), torch.arange(5)
+    trace = cope.position_trace(q, k, qpos, checkpoint_id="trained")
+    validate_contextual_path(trace.positions, qpos, kpos)
+    positions = trace.positions.clone()
+    positions.masked_fill_(~trace.allowed_mask, 0.75)
+    # Future bias slots do not enter causal attention, so they need not be zero.
+    validate_contextual_path(positions, qpos, kpos)
+    positions[0, 1, 0] = 1.1
+    with pytest.raises(CCPEPositionError, match="available gates"):
+        validate_contextual_path(positions, qpos, kpos)
+
+
+def test_contextual_path_rejects_hybrid_nonmonotonic_fixed_dynamic_positions():
+    cope = CoPE(1, 16)
+    old = cope.position_trace(
+        torch.ones(3, 1, 1),
+        torch.zeros(3, 1, 1),
+        torch.arange(3),
+        checkpoint_id="trained",
+    )
+    canonical = old.project(torch.tensor([0, 2]), torch.tensor([0, 2]))
+    current = cope.position_trace(
+        torch.ones(1, 1, 1),
+        torch.zeros(5, 1, 1),
+        torch.tensor([4]),
+        checkpoint_id="trained",
+    )
+    hybrid = current.positions.clone()
+    hybrid[:, 0, [0, 4]] = canonical.positions[:, 1]
+    torch.testing.assert_close(hybrid, torch.tensor([[[1.5, 2, 1.5, 1, 0.5]]]))
+    with pytest.raises(CCPEPositionError, match="nonincreasing"):
+        validate_contextual_path(hybrid, torch.tensor([4]), torch.arange(5))
+
+
+def test_contextual_path_sparse_coordinates_and_masked_segments():
+    # Retained gates at omitted coordinates may contribute up to the gap size.
+    projected = torch.tensor([[[2.25, 0.5]]])
+    validate_contextual_path(projected, torch.tensor([2]), torch.tensor([0, 2]))
+    with pytest.raises(CCPEPositionError, match="one gate per token"):
+        validate_contextual_path(
+            torch.tensor([[[2.75, 0.5]]]), torch.tensor([2]), torch.tensor([0, 2])
+        )
+    mask = torch.tensor([[True, False, True]])
+    validate_contextual_path(
+        torch.tensor([[[1, 99, 0.5]]]),
+        torch.tensor([2]),
+        torch.arange(3),
+        attention_mask=mask,
+    )
+
+
+def test_contextual_path_tolerates_cumulative_sum_roundoff_at_binade_boundary():
+    cope = CoPE(1, 256)
+    logits = torch.tensor([100.0] * 128 + [-11.5])[None, None]
+    positions = cope.contextual_positions(
+        logits, torch.ones_like(logits, dtype=torch.bool)
+    )
+    # Rounded 128.x and 127.x can differ by >1 although every gate is <=1.
+    assert (positions[..., :-1] - positions[..., 1:]).max() > 1 + 1e-6
+    validate_contextual_path(positions, torch.tensor([128]), torch.arange(129))
+
+
+@pytest.mark.parametrize(
+    "positions,qpos,kpos,kwargs",
+    [
+        (torch.ones(1, 1, 2, dtype=torch.long), torch.tensor([1]), torch.arange(2), {}),
+        (torch.full((1, 1, 2), torch.nan), torch.tensor([1]), torch.arange(2), {}),
+        (torch.ones(1, 1, 2), torch.tensor([1.0]), torch.arange(2), {}),
+        (torch.ones(1, 1, 2), torch.tensor([1]), torch.tensor([1, 0]), {}),
+        (torch.ones(1, 1, 2), torch.tensor([1]), torch.arange(2), {"atol": -1}),
+        (
+            torch.ones(1, 1, 2),
+            torch.tensor([1]),
+            torch.arange(2),
+            {"attention_mask": torch.ones(1, 2)},
+        ),
+    ],
+)
+def test_contextual_path_type_and_numeric_errors_have_distinct_exception(
+    positions, qpos, kpos, kwargs
+):
+    with pytest.raises(CCPEPositionError):
+        validate_contextual_path(positions, qpos, kpos, **kwargs)
+
+
+def test_chunk_transforms_match_precomputed_bias_and_visibility_with_gradients():
+    torch.manual_seed(29)
+    cope = CoPE(2, 8, dtype=torch.float64)
+    with torch.no_grad():
+        cope.position_embeddings.normal_()
+    q = torch.randn(3, 4, 2, dtype=torch.float64, requires_grad=True)
+    k = torch.randn(5, 2, 2, dtype=torch.float64, requires_grad=True)
+    v = torch.randn(5, 2, 3, dtype=torch.float64, requires_grad=True)
+    qpos, kpos = torch.tensor([4, 1, 3]), torch.arange(5)
+    gate_mask = kpos[None] != 0
+    gate_mask = gate_mask.expand(3, -1)
+    trace = cope.position_trace(
+        q, k, qpos, attention_mask=gate_mask, checkpoint_id="trained"
+    )
+    visibility = (kpos[None] % 2 == 0) | (kpos[None] == qpos[:, None])
+    expected = cope_attention(
+        q,
+        k,
+        v,
+        cope,
+        qpos,
+        attention_mask=gate_mask,
+        fixed_positions=trace.positions * 0.5,
+        visibility_mask=visibility,
+    )
+    events = []
+
+    def transform(positions, queries, keys):
+        events.append(("positions", queries.tolist()))
+        assert positions.shape[1] <= 2
+        torch.testing.assert_close(keys, kpos)
+        indices = (queries[:, None] == qpos[None, :]).long().argmax(-1)
+        torch.testing.assert_close(positions, trace.positions[:, indices])
+        return positions * 0.5
+
+    def visibility_transform(queries, keys):
+        events.append(("visibility", queries.tolist()))
+        assert queries.numel() <= 2
+        return (keys[None] % 2 == 0) | (keys[None] == queries[:, None])
+
+    actual, transformed = cope_attention(
+        q,
+        k,
+        v,
+        cope,
+        qpos,
+        attention_mask=gate_mask,
+        positions_transform=transform,
+        visibility_transform=visibility_transform,
+        query_chunk_size=2,
+        return_positions=True,
+    )
+    torch.testing.assert_close(actual, expected)
+    torch.testing.assert_close(transformed, trace.positions * 0.5)
+    assert events == [
+        ("positions", [4, 1]),
+        ("visibility", [4, 1]),
+        ("positions", [3]),
+        ("visibility", [3]),
+    ]
+    transformed.sum().backward(retain_graph=True)
+    assert q.grad.abs().sum() > 0
+    assert k.grad.abs().sum() > 0
+    actual.square().sum().backward()
+    assert v.grad.abs().sum() > 0
+    assert cope.position_embeddings.grad.abs().sum() > 0
+
+
+def test_transforms_reject_ambiguous_arguments_and_invalid_results():
+    cope = CoPE(1, 4)
+    q, k, v = [torch.ones(2, 1, 1) for _ in range(3)]
+    args = (q, k, v, cope, torch.arange(2))
+    with pytest.raises(CCPEPositionError, match="mutually exclusive"):
+        cope_attention(
+            *args,
+            fixed_positions=torch.ones(1, 2, 2),
+            positions_transform=lambda p, *_: p,
+        )
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        cope_attention(
+            *args,
+            visibility_mask=torch.ones(2, 2, dtype=torch.bool),
+            visibility_transform=lambda *_: torch.ones(2, 2, dtype=torch.bool),
+        )
+    for transform in (
+        lambda p, *_: p[:, 0],
+        lambda p, *_: p.double(),
+        lambda p, *_: p * torch.nan,
+        lambda p, *_: p - 5,
+        lambda *_: None,
+    ):
+        with pytest.raises(CCPEPositionError, match="positions_transform"):
+            cope_attention(*args, positions_transform=transform)
+    for transform in (lambda *_: None, lambda *_: torch.ones(2, 2)):
+        with pytest.raises(ValueError, match="bool"):
+            cope_attention(*args, visibility_transform=transform)
 
 
 def make_trace(value=0.0):

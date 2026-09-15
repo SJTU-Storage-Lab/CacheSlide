@@ -41,7 +41,8 @@ class RequestPlan:
 
     Reusable chunks retain their relative order. Cache identity includes all
     preceding reusable chunks, so moving a chunk or changing its fixed context
-    is a miss. Dynamic chunks deliberately do not participate in that identity.
+    is a miss. Dynamic content and length may vary, but its location in the
+    ordered reuse/recompute template remains part of the task identity.
     """
 
     operation: str
@@ -151,17 +152,18 @@ class RequestPlan:
         # Entire ordered fixed layout protects fixed-to-fixed dependencies.
         return digest(
             [
-                "CacheSlide-KV-v1",
+                "CacheSlide-KV-v2",
                 model_identity,
                 self.namespace,
                 self.task_id,
                 self.fixed_layout,
+                [(chunk.chunk_id, chunk.role) for chunk in self.chunks],
                 layer,
             ]
         )
 
     def profile_key(self, model_identity: str, layer: int) -> str:
-        return digest(["CacheSlide-CCPE-v1", self.cache_key(model_identity, layer)])
+        return digest(["CacheSlide-CCPE-v2", self.cache_key(model_identity, layer)])
 
     def to_json(self) -> str:
         return json.dumps(

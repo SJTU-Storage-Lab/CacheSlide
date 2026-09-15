@@ -15,7 +15,7 @@ def test_no_legacy_engine_or_build_system_is_shipped():
 
 
 def test_configuration_and_planning_import_without_numeric_or_native_engines():
-    code = r'''
+    code = r"""
 import importlib.abc
 import sys
 class BlockEngines(importlib.abc.MetaPathFinder):
@@ -29,8 +29,9 @@ assert policy.WCAConfig().correction_fraction == 0.26
 config.CacheSlideSettings('/adapter', '/cache')
 assert cli.parser() and workflow.parser()
 assert not {'torch', 'safetensors', 'vllm'} & set(sys.modules)
-'''
+"""
     subprocess.run(
         [sys.executable, "-I", "-S", "-c", code, str(ROOT / "src")],
-        check=True, timeout=20,
+        check=True,
+        timeout=20,
     )

@@ -52,7 +52,7 @@ def test_valid_plan_round_trips_and_snapshots_input():
     assert plan.mandatory_indices == (2,)
 
 
-def test_cross_position_cache_identity_excludes_dynamic_tokens_only():
+def test_cache_identity_includes_ordered_template():
     original = RequestPlan.parse(request_metadata(), [10, 20, 30])
     moved = request_metadata()
     moved["chunks"] = [
@@ -61,7 +61,7 @@ def test_cross_position_cache_identity_excludes_dynamic_tokens_only():
         {"id": "query", "role": "recompute", "start": 4, "end": 5},
     ]
     shifted = RequestPlan.parse(moved, [98, 99, 10, 20, 31])
-    assert shifted.cache_key("backbone-adapter", 2) == original.cache_key(
+    assert shifted.cache_key("backbone-adapter", 2) != original.cache_key(
         "backbone-adapter", 2
     )
     changed = RequestPlan.parse(copy.deepcopy(moved), [98, 99, 10, 21, 31])
@@ -71,6 +71,15 @@ def test_cross_position_cache_identity_excludes_dynamic_tokens_only():
     assert original.cache_key("other-backbone", 2) != original.cache_key(
         "backbone-adapter", 2
     )
+
+
+def test_same_template_accepts_dynamic_length_and_content_changes():
+    metadata = request_metadata()
+    original = RequestPlan.parse(metadata, [10, 20, 30])
+    metadata["chunks"][-1]["end"] = 5
+    changed = RequestPlan.parse(metadata, [10, 20, 98, 99, 31])
+    assert original.cache_key("m", 2) == changed.cache_key("m", 2)
+    assert original.profile_key("m", 2) == changed.profile_key("m", 2)
 
 
 @pytest.mark.parametrize("boundary", [True, 1.0, "1"])

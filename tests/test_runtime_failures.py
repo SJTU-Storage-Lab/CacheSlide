@@ -4,8 +4,78 @@ import pytest
 import torch
 
 from cacheslide_vllm.runtime import CacheSlideRuntime
+from cacheslide_vllm.wca import WCANumericalError, WCAState
 
 from .test_runtime import build_runtime, plan, prefill
+
+
+def test_invalid_hybrid_positions_retry_plain_cope_and_do_not_publish(tmp_path):
+    model, runtime = build_runtime(tmp_path, ccpe_position_policy="strict_contextual")
+    try:
+        request = plan((4, 10), operation="populate")
+        actual = prefill(model, runtime, request)
+        # The calibrated fixed/fixed projection is not a valid gate path for
+        # this longer dynamic span. The fallback must clear ALL layer profiles.
+        metrics = runtime.last_metrics
+        assert metrics["position_policy_fallback"] and metrics["fallback"]
+        assert metrics["ccpe_position_policy"] == "plain_cope_fallback"
+        assert metrics["layer_rows"] == [9] * 6
+        assert not runtime.requests["r"].profiles
+        assert not runtime.store.keys()
+        expected = model(torch.tensor(request.token_ids))
+        torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-6)
+    finally:
+        runtime.close()
+
+
+def test_typed_wca_numeric_failure_restarts_dense_before_sampling(
+    tmp_path, monkeypatch
+):
+    model, runtime = build_runtime(tmp_path)
+    try:
+        prefill(model, runtime, plan(operation="populate"))
+        request = plan((4, 10), operation="reuse")
+        expected = prefill(model, runtime, replace(request, operation="recompute"))
+
+        def overflow(*args, **kwargs):
+            raise WCANumericalError("finite float16 fusion overflow")
+
+        monkeypatch.setattr(WCAState, "update", overflow)
+        actual = prefill(model, runtime, request)
+        torch.testing.assert_close(actual, expected)
+        assert runtime.last_metrics["fallback"]
+        assert not runtime.last_metrics["cache_hit"]
+        assert not runtime.last_metrics["position_policy_fallback"]
+        assert runtime.last_metrics["layer_rows"] == [9] * 6
+    finally:
+        runtime.close()
+
+
+def test_wca_schema_error_is_not_hidden_by_dense_retry(tmp_path, monkeypatch):
+    model, runtime = build_runtime(tmp_path)
+    try:
+        prefill(model, runtime, plan(operation="populate"))
+
+        def invalid(*args, **kwargs):
+            raise ValueError("invalid caller shape")
+
+        monkeypatch.setattr(WCAState, "update", invalid)
+        with pytest.raises(ValueError, match="invalid caller shape"):
+            prefill(model, runtime, plan((4, 10), operation="reuse"))
+    finally:
+        runtime.close()
+
+
+def test_literal_first_layer_wca_does_not_invent_nonzero_error(tmp_path):
+    model, runtime = build_runtime(tmp_path, calibration_layer=0)
+    try:
+        prefill(model, runtime, plan(operation="populate"))
+        prefill(model, runtime, plan((4, 10), operation="reuse"))
+        assert runtime.last_metrics["cache_hit"]
+        assert runtime.last_metrics["layer_rows"] == [9, 3, 3, 3, 3, 3]
+        assert not len(runtime.requests["r"].wca.selected_indices)
+    finally:
+        runtime.close()
 
 
 def install_inplace_residual_norms(model, monkeypatch):

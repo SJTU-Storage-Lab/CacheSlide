@@ -3,6 +3,7 @@ import torch
 
 from cacheslide_vllm.wca import (
     WCAConfig,
+    WCANumericalError,
     WCAState,
     adaptation_weight,
     mean_head_cosine,
@@ -52,7 +53,7 @@ def test_weight_raw_ratio_zero_norm_and_wide_accumulation():
     assert adaptation_weight(cached, cached).item() == 0
     huge = torch.full((1, 1, 2), 1e30)
     assert adaptation_weight(huge, 2 * huge).item() == pytest.approx(1.0)
-    with pytest.raises(ValueError, match="overflow"):
+    with pytest.raises(WCANumericalError, match="overflow"):
         adaptation_weight(
             torch.zeros(1, 1, 1, dtype=torch.float64),
             torch.full((1, 1, 1), 1e308, dtype=torch.float64),
@@ -149,13 +150,94 @@ def test_invalid_masks_nonfinite_and_transactional_overflow():
         WCAState.initialize(
             cached, cached, torch.tensor([False]), torch.tensor([False])
         )
-    with pytest.raises(ValueError, match="finite"):
+    with pytest.raises(WCANumericalError, match="finite"):
         adaptation_weight(cached, cached * torch.nan)
     half = torch.zeros(1, 1, 1, dtype=torch.float16)
     state = WCAState.initialize(
         half, half + 1, torch.tensor([True]), torch.tensor([False])
     )
-    with pytest.raises(ValueError, match="overflow"):
+    initial = {
+        name: getattr(state, name).clone()
+        for name in ("alpha", "candidate_mask", "selected_mask", "removed_mask")
+    }
+    with pytest.raises(WCANumericalError, match="overflow"):
         state.update(2, half, half, half + 1, half + 1)
     assert state.last_layer == 1
     assert state.selected_indices.tolist() == [0]
+    for name, value in initial.items():
+        assert torch.equal(getattr(state, name), value)
+
+
+@pytest.mark.parametrize(
+    "field", ["correction_fraction", "epsilon", "convergence_threshold"]
+)
+@pytest.mark.parametrize(
+    "value",
+    [True, False, "0.26", None, 1j, float("nan"), float("inf"), 10**1000],
+    ids=["true", "false", "string", "none", "complex", "nan", "inf", "huge_int"],
+)
+def test_policy_rejects_nonfinite_or_non_numeric_fields(field, value):
+    with pytest.raises(ValueError, match=field):
+        WCAConfig(**{field: value})
+
+
+@pytest.mark.parametrize("value", [True, False, 4.0, "4", None, 0, -1])
+def test_policy_requires_positive_integer_gate_interval(value):
+    with pytest.raises(ValueError, match="gate_interval"):
+        WCAConfig(gate_interval=value)
+
+
+@pytest.mark.parametrize("value", ["false", "true", 0, 1, None])
+def test_policy_does_not_truth_coerce_clamp_alpha(value):
+    with pytest.raises(ValueError, match="clamp_alpha"):
+        WCAConfig(clamp_alpha=value)
+
+
+def test_policy_accepts_explicit_boolean_clamp_and_numeric_boundaries():
+    assert WCAConfig(clamp_alpha=False).clamp_alpha is False
+    assert WCAConfig(clamp_alpha=True).clamp_alpha is True
+    assert WCAConfig(correction_fraction=0).correction_fraction == 0
+    assert WCAConfig(correction_fraction=1, epsilon=1).epsilon == 1
+    # Thresholds outside the cosine range remain explicit test/experiment policy.
+    assert WCAConfig(convergence_threshold=2).convergence_threshold == 2
+
+
+@pytest.mark.parametrize("function", [adaptation_weight, mean_head_cosine])
+@pytest.mark.parametrize("epsilon", [True, "1e-8", None, float("inf"), 0, -1])
+def test_numeric_helpers_validate_epsilon(function, epsilon):
+    cached = torch.ones(1, 1, 1)
+    with pytest.raises(ValueError, match="epsilon") as error:
+        function(cached, cached, epsilon=epsilon)
+    assert type(error.value) is ValueError
+
+
+def test_adaptation_helper_does_not_truth_coerce_clamp():
+    cached = torch.ones(1, 1, 1)
+    with pytest.raises(ValueError, match="clamp") as error:
+        adaptation_weight(cached, 3 * cached, clamp="false")
+    assert type(error.value) is ValueError
+
+
+def test_finite_float64_overflow_has_specific_numeric_exception():
+    zero = torch.zeros(1, 1, 1, dtype=torch.float64)
+    huge = torch.full_like(zero, 1e308)
+    with pytest.raises(WCANumericalError, match="deviation overflow"):
+        squared_deviation(zero, huge)
+    # Without checking the denominator, zero / infinity silently returns zero.
+    with pytest.raises(WCANumericalError, match="weight overflow"):
+        adaptation_weight(huge, huge)
+    # Each accumulated norm is finite, but their ratio is not representable.
+    with pytest.raises(WCANumericalError, match="weight overflow"):
+        adaptation_weight(zero, zero + 1, epsilon=1e-320)
+
+
+def test_structural_and_order_errors_are_not_numerical_failures():
+    cached = torch.ones(1, 1, 1)
+    with pytest.raises(ValueError, match="shape, dtype") as error:
+        adaptation_weight(cached, torch.full((2, 1, 1), float("nan")))
+    assert type(error.value) is ValueError
+    state, cached, _, _, _ = make_state()
+    rows = state.active_indices
+    with pytest.raises(ValueError, match="consecutively") as error:
+        state.update(3, cached, cached, cached[rows], cached[rows])
+    assert type(error.value) is ValueError

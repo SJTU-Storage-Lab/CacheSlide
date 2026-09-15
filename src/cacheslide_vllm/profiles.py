@@ -28,8 +28,12 @@ def _integer(value: object, name: str, minimum: int = 1) -> int:
 
 
 def _label(value: object, name: str) -> str:
-    if (not isinstance(value, str) or not value.strip() or len(value) > 256
-            or any(ord(character) < 32 for character in value)):
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or len(value) > 256
+        or any(ord(character) < 32 for character in value)
+    ):
         raise ValueError(f"invalid {name}")
     return value
 
@@ -67,21 +71,39 @@ def _artifact_file(directory: Path, name: str) -> Path:
 
 
 def _chunks(plan: RequestPlan) -> tuple[ChunkIdentity, ...]:
-    return tuple(ChunkIdentity(chunk_id, token_digest, length)
-                 for chunk_id, token_digest, length in plan.fixed_layout)
+    return tuple(
+        ChunkIdentity(chunk_id, token_digest, length)
+        for chunk_id, token_digest, length in plan.fixed_layout
+    )
 
 
 def _read_manifest(path: Path) -> dict:
     if path.stat().st_size > _MAX_JSON_BYTES:
         raise ValueError("profile metadata exceeds size budget")
-    metadata = json.loads(path.read_text(), object_pairs_hook=_unique_object,
-                          parse_constant=_nonfinite_json)
-    _fields(metadata, {"format", "adapter_identity", "trained_profile_version",
-                       "num_layers", "query_heads", "max_positions", "profiles",
-                       "tensors_sha256", "manifest_sha256"}, "profile manifest")
+    metadata = json.loads(
+        path.read_text(),
+        object_pairs_hook=_unique_object,
+        parse_constant=_nonfinite_json,
+    )
+    _fields(
+        metadata,
+        {
+            "format",
+            "adapter_identity",
+            "trained_profile_version",
+            "num_layers",
+            "query_heads",
+            "max_positions",
+            "profiles",
+            "tensors_sha256",
+            "manifest_sha256",
+        },
+        "profile manifest",
+    )
     checksum = _hash(metadata["manifest_sha256"], "manifest")
-    payload = {key: value for key, value in metadata.items()
-               if key != "manifest_sha256"}
+    payload = {
+        key: value for key, value in metadata.items() if key != "manifest_sha256"
+    }
     if digest(payload) != checksum:
         raise ValueError("profile manifest checksum mismatch")
     return metadata
@@ -95,8 +117,9 @@ class ProfileBundle:
     None; callers must then use contextual attention rather than extrapolation.
     """
 
-    def __init__(self, path: str | Path, adapter_identity: str,
-                 max_elements: int = 1_000_000):
+    def __init__(
+        self, path: str | Path, adapter_identity: str, max_elements: int = 1_000_000
+    ):
         _integer(max_elements, "max_elements")
         _hash(adapter_identity, "adapter identity")
         self.path = Path(path).resolve(strict=True)
@@ -117,8 +140,11 @@ class ProfileBundle:
         total = 0
         for key, entry in entries.items():
             _hash(key, "profile key")
-            _fields(entry, {"layer", "chunks", "histogram_bin_width", "sample_count"},
-                    "profile entry")
+            _fields(
+                entry,
+                {"layer", "chunks", "histogram_bin_width", "sample_count"},
+                "profile entry",
+            )
             layer = _integer(entry["layer"], "layer", 0)
             if layer >= layers:
                 raise ValueError("profile layer outside model geometry")
@@ -128,14 +154,21 @@ class ProfileBundle:
             chunks = []
             for raw in raw_chunks:
                 _fields(raw, {"role", "content_hash", "length"}, "chunk identity")
-                chunks.append(ChunkIdentity(_label(raw["role"], "chunk role"),
-                                            _hash(raw["content_hash"], "chunk"),
-                                            _integer(raw["length"], "chunk length")))
+                chunks.append(
+                    ChunkIdentity(
+                        _label(raw["role"], "chunk role"),
+                        _hash(raw["content_hash"], "chunk"),
+                        _integer(raw["length"], "chunk length"),
+                    )
+                )
             if len({chunk.role for chunk in chunks}) != len(chunks):
                 raise ValueError("duplicate ordered fixed chunk identity")
             width = entry["histogram_bin_width"]
-            if (type(width) not in (float, int) or not math.isfinite(width)
-                    or width <= 0):
+            if (
+                type(width) not in (float, int)
+                or not math.isfinite(width)
+                or width <= 0
+            ):
                 raise ValueError("invalid histogram bin width")
             _integer(entry["sample_count"], "sample_count")
             count = sum(chunk.length for chunk in chunks)
@@ -159,28 +192,37 @@ class ProfileBundle:
                 raise ValueError("profile tensor keys mismatch")
             for name, (shape, dtype) in expected_tensors.items():
                 tensor_slice = source.get_slice(name)
-                if (tuple(tensor_slice.get_shape()) != shape
-                        or tensor_slice.get_dtype() != dtype):
+                if (
+                    tuple(tensor_slice.get_shape()) != shape
+                    or tensor_slice.get_dtype() != dtype
+                ):
                     raise ValueError("profile tensor layout/dtype mismatch")
             for key, (entry, chunks, count) in specifications.items():
                 positions = source.get_tensor(f"{key}.positions")
                 query_positions = source.get_tensor(f"{key}.query_positions")
                 key_positions = source.get_tensor(f"{key}.key_positions")
                 ordinals = torch.arange(count)
-                if (not torch.equal(query_positions, ordinals)
-                        or not torch.equal(key_positions, ordinals)):
+                if not torch.equal(query_positions, ordinals) or not torch.equal(
+                    key_positions, ordinals
+                ):
                     raise ValueError(
                         "profile query/key layout must be canonical ordinals"
                     )
-                if (not torch.isfinite(positions).all() or (positions < 0).any()
-                        or (positions > max_positions - 1).any()):
+                if (
+                    not torch.isfinite(positions).all()
+                    or (positions < 0).any()
+                    or (positions > max_positions - 1).any()
+                ):
                     raise ValueError("profile positions must be finite and bounded")
                 if positions.triu(diagonal=1).count_nonzero():
                     raise ValueError("profile has noncausal canonical positions")
                 self._profiles[key] = CCPEProfile(
-                    trained_profile_version=version, checkpoint_id=adapter_identity,
-                    chunks=chunks, query_positions=query_positions,
-                    key_positions=key_positions, canonical_positions=positions,
+                    trained_profile_version=version,
+                    checkpoint_id=adapter_identity,
+                    chunks=chunks,
+                    query_positions=query_positions,
+                    key_positions=key_positions,
+                    canonical_positions=positions,
                     max_positions=max_positions,
                     histogram_bin_width=float(entry["histogram_bin_width"]),
                     sample_count=entry["sample_count"],
@@ -199,9 +241,13 @@ class ProfileBundle:
         if self.metadata["profiles"][key]["layer"] != layer:
             raise ValueError("profile key refers to a different layer")
         count = len(plan.fixed_indices)
-        profile.lookup(_chunks(plan), torch.arange(count), torch.arange(count),
-                       checkpoint_id=self.adapter_identity,
-                       trained_profile_version=self.metadata["trained_profile_version"])
+        profile.lookup(
+            _chunks(plan),
+            torch.arange(count),
+            torch.arange(count),
+            checkpoint_id=self.adapter_identity,
+            trained_profile_version=self.metadata["trained_profile_version"],
+        )
         return profile
 
 
@@ -237,8 +283,9 @@ def calibrate_profiles(
             raise ValueError("each calibration request needs a reusable fixed chunk")
         plans.append(plan)
     bundle = AdapterBundle(adapter_dir, model_dir)
-    layers, heads = (bundle.config[name] for name in
-                     ("num_hidden_layers", "num_attention_heads"))
+    layers, heads = (
+        bundle.config[name] for name in ("num_hidden_layers", "num_attention_heads")
+    )
     chunks_by_key = {}
     layer_by_key = {}
     # Budget the whole run before creating quadratic traces, not just each sample.
@@ -260,8 +307,10 @@ def calibrate_profiles(
     from .reference import ReferenceLlama
 
     model = ReferenceLlama.from_checkpoint(
-        model_dir, rank=bundle.metadata["rank"],
-        max_positions=bundle.metadata["max_positions"], device=device,
+        model_dir,
+        rank=bundle.metadata["rank"],
+        max_positions=bundle.metadata["max_positions"],
+        device=device,
         dtype=torch.float32,
     )
     model.load_adapters(bundle)
@@ -271,32 +320,47 @@ def calibrate_profiles(
         fixed_indices = torch.tensor(plan.fixed_indices, dtype=torch.long)
         observed = set()
 
-        def observe(layer: int, query: torch.Tensor, key: torch.Tensor,
-                    cope: CoPE) -> None:
+        def observe(
+            layer: int, query: torch.Tensor, key: torch.Tensor, cope: CoPE
+        ) -> None:
             if type(layer) is not int or not 0 <= layer < layers or layer in observed:
                 raise ValueError("reference observer emitted an invalid/repeated layer")
             length = len(plan.token_ids)
-            if (query.shape != (length, heads, bundle.config["head_dim"])
-                    or key.shape != (length, bundle.config["num_key_value_heads"],
-                                     bundle.config["head_dim"])):
+            if query.shape != (
+                length,
+                heads,
+                bundle.config["head_dim"],
+            ) or key.shape != (
+                length,
+                bundle.config["num_key_value_heads"],
+                bundle.config["head_dim"],
+            ):
                 raise ValueError("reference observer Q/K layout mismatch")
             trace = cope.position_trace(
-                query, key, torch.arange(length, device=query.device),
-                checkpoint_id=bundle.identity, max_elements=max_elements,
+                query,
+                key,
+                torch.arange(length, device=query.device),
+                checkpoint_id=bundle.identity,
+                max_elements=max_elements,
             ).project(fixed_indices, fixed_indices, canonical_positions=True)
             traces[plan.profile_key(bundle.identity, layer)].append(trace)
             observed.add(layer)
 
         with torch.inference_mode():
-            model.forward(torch.tensor(plan.token_ids, dtype=torch.long, device=device),
-                          observer=observe)
+            model.forward(
+                torch.tensor(plan.token_ids, dtype=torch.long, device=device),
+                observer=observe,
+            )
         if observed != set(range(layers)):
             raise ValueError("reference model did not observe every attention layer")
 
     profiles = {
-        key: CCPEProfile.calibrate(samples, chunks_by_key[key],
-                                   trained_profile_version=trained_profile_version,
-                                   max_elements=max_elements)
+        key: CCPEProfile.calibrate(
+            samples,
+            chunks_by_key[key],
+            trained_profile_version=trained_profile_version,
+            max_elements=max_elements,
+        )
         for key, samples in traces.items()
     }
     tensors = {}
@@ -307,8 +371,14 @@ def calibrate_profiles(
         tensors[f"{key}.key_positions"] = profile.key_positions.contiguous()
         entries[key] = {
             "layer": layer_by_key[key],
-            "chunks": [{"role": chunk.role, "content_hash": chunk.content_hash,
-                        "length": chunk.length} for chunk in profile.chunks],
+            "chunks": [
+                {
+                    "role": chunk.role,
+                    "content_hash": chunk.content_hash,
+                    "length": chunk.length,
+                }
+                for chunk in profile.chunks
+            ],
             "histogram_bin_width": profile.histogram_bin_width,
             "sample_count": profile.sample_count,
         }
@@ -317,10 +387,13 @@ def calibrate_profiles(
     tensors_path = output / "profiles.safetensors"
     save_file(tensors, str(tensors_path))
     metadata = {
-        "format": _FORMAT, "adapter_identity": bundle.identity,
+        "format": _FORMAT,
+        "adapter_identity": bundle.identity,
         "trained_profile_version": trained_profile_version,
-        "num_layers": layers, "query_heads": heads,
-        "max_positions": bundle.metadata["max_positions"], "profiles": entries,
+        "num_layers": layers,
+        "query_heads": heads,
+        "max_positions": bundle.metadata["max_positions"],
+        "profiles": entries,
         "tensors_sha256": file_sha256(tensors_path),
     }
     metadata["manifest_sha256"] = digest(metadata)

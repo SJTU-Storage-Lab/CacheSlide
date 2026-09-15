@@ -206,7 +206,9 @@ def test_token_f1_counts_multiplicity_and_explicitly_ignores_order():
     assert cli._token_f1([], [1]) == 0
 
 
-@pytest.mark.parametrize("failure", ["miss", "fallback", "stale", "zero_time"])
+@pytest.mark.parametrize(
+    "failure", ["miss", "fallback", "baseline_fallback", "stale", "zero_time"]
+)
 def test_benchmark_suppresses_unvalidated_ratio(tmp_path, monkeypatch, capsys, failure):
     args = native_args(tmp_path, extra=("--run", "--repeats", "1", "--warmup", "0"))
     state = SimpleNamespace(receipt=None, calls=0, closed=False)
@@ -229,6 +231,8 @@ def test_benchmark_suppresses_unvalidated_ratio(tmp_path, monkeypatch, capsys, f
                     state.receipt["fallback"] = True
                 elif failure == "stale":
                     state.receipt["request_id"] = "old-request"
+            if operation == "recompute" and failure == "baseline_fallback":
+                state.receipt["fallback"] = True
             return [
                 SimpleNamespace(
                     request_id=str(state.calls),
@@ -252,7 +256,11 @@ def test_benchmark_suppresses_unvalidated_ratio(tmp_path, monkeypatch, capsys, f
     assert cli.main(args) == 0
     summary = json.loads(capsys.readouterr().out)
     assert summary["baseline_over_reuse_latency_ratio"] is None
-    assert summary["reuse_validation_passed"] is (failure == "zero_time")
+    assert summary["reuse_validation_passed"] is (
+        failure in {"zero_time", "baseline_fallback"}
+    )
+    if failure == "baseline_fallback":
+        assert summary["baseline_validation_passed"] is False
     assert state.closed
 
 

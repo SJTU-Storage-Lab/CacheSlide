@@ -17,24 +17,34 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor
 
-from .policy import WCAConfig
+from .policy import WCAConfig, _finite_number
+
+
+class WCANumericalError(ValueError):
+    """Nonfinite WCA data or arithmetic that permits full-prefill recovery.
+
+    Shape, policy, and call-order violations remain ordinary ValueError so a
+    runtime can recover from numerical failure without masking integration bugs.
+    """
 
 
 def _kv(name: str, tensor: Tensor) -> None:
     if tensor.ndim != 3 or not tensor.is_floating_point():
         raise ValueError(f"{name} must be floating [token, head, dimension]")
-    if min(tensor.shape[1:]) < 1 or not torch.isfinite(tensor).all():
-        raise ValueError(f"{name} must have nonempty heads/dimension and finite values")
+    if min(tensor.shape[1:]) < 1:
+        raise ValueError(f"{name} must have nonempty heads/dimension")
+    if not torch.isfinite(tensor).all():
+        raise WCANumericalError(f"{name} must have finite values")
 
 
 def _matching(name: str, tensor: Tensor, reference: Tensor) -> None:
-    _kv(name, tensor)
     if (tensor.shape, tensor.dtype, tensor.device) != (
         reference.shape,
         reference.dtype,
         reference.device,
     ):
         raise ValueError(f"{name} shape, dtype and device must match its reference")
+    _kv(name, tensor)
 
 
 def _mask(name: str, tensor: Tensor, n: int, device: torch.device) -> None:
@@ -48,7 +58,7 @@ def squared_deviation(cached_k: Tensor, recomputed_k: Tensor) -> Tensor:
     _matching("recomputed_k", recomputed_k, cached_k)
     result = (recomputed_k.double() - cached_k.double()).square().sum((1, 2))
     if not torch.isfinite(result).all():
-        raise ValueError("squared deviation overflowed float64")
+        raise WCANumericalError("squared deviation overflowed float64")
     return result
 
 
@@ -66,13 +76,20 @@ def adaptation_weight(
     """
     _kv("cached_k", cached_k)
     _matching("recomputed_k", recomputed_k, cached_k)
-    if not math.isfinite(epsilon) or epsilon <= 0:
+    _finite_number("epsilon", epsilon)
+    if epsilon <= 0:
         raise ValueError("epsilon must be finite and positive")
+    if type(clamp) is not bool:
+        raise ValueError("clamp must be a boolean")
     numerator = (recomputed_k.double() - cached_k.double()).square().sum((1, 2))
     denominator = cached_k.double().square().sum((1, 2)) + epsilon
+    if not torch.isfinite(numerator).all() or not torch.isfinite(denominator).all():
+        raise WCANumericalError("adaptation weight overflowed float64")
     result = numerator / denominator
     if not torch.isfinite(result).all():
-        raise ValueError("adaptation weight overflowed; inspect the K magnitudes")
+        raise WCANumericalError(
+            "adaptation weight overflowed; inspect the K magnitudes"
+        )
     return result.clamp(0, 1) if clamp else result
 
 
@@ -80,7 +97,8 @@ def mean_head_cosine(a: Tensor, b: Tensor, *, epsilon: float = 1e-8) -> Tensor:
     """Mean cosine over heads; zero norm heads contribute zero."""
     _kv("a", a)
     _matching("b", b, a)
-    if not math.isfinite(epsilon) or epsilon <= 0:
+    _finite_number("epsilon", epsilon)
+    if epsilon <= 0:
         raise ValueError("epsilon must be finite and positive")
     # Scaling first also keeps norms/products safe for very large finite K.
     a64, b64 = a.double(), b.double()
@@ -253,7 +271,7 @@ class WCAState:
             cached_v.dtype
         )
         if not torch.isfinite(fused_k).all() or not torch.isfinite(fused_v).all():
-            raise ValueError("weighted K/V overflowed the cache dtype")
+            raise WCANumericalError("weighted K/V overflowed the cache dtype")
 
         removed = indices[:0]
         if layer_index % self.config.gate_interval == 0:

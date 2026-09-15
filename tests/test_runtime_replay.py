@@ -5,7 +5,6 @@ from dataclasses import replace
 import pytest
 import torch
 
-from cacheslide_vllm.contracts import Chunk
 from cacheslide_vllm.integration import StepContext
 from cacheslide_vllm.runtime import CacheSlideRuntime
 from tests.test_runtime import build_runtime, decode, plan, prefill
@@ -45,8 +44,8 @@ def test_preempted_reuse_dense_replay_preserves_profiles_and_decode(tmp_path, pa
         operation="recompute",
         token_ids=complete,
         chunks=(
-            *request.chunks,
-            Chunk("generated", "recompute", len(request.token_ids), len(complete)),
+            *request.chunks[:-1],
+            replace(request.chunks[-1], end=len(complete)),
         ),
     )
     try:

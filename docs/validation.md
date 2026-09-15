@@ -1,72 +1,75 @@
-# Validation snapshot: 2026-09-15
+# Validation: paper-conformance audit, 2026-09-15
 
-Environment: Python 3.12.14, Torch 2.13.0, macOS ARM64 CPU.
-CUDA was unavailable in this test environment. These are correctness and
-integration-contract results, not GPU performance measurements.
+Environment: Python 3.12.14, Torch 2.13.0, macOS ARM64 CPU. CUDA was
+unavailable. These are correctness and integration-contract checks, not GPU
+performance measurements. See the [paper-conformance audit](paper_conformance.md)
+for literal defaults, explicit variants and missing system functionality.
 
-## Executed checks
+## Current audit results
 
-- **311 tests passed**, with no skips, after setting `CACHESLIDE_VLLM_SOURCE`
-  to a checkout of vLLM tag `v0.29.0`.
-- Ruff passed for `src`, `tests`, and `benchmarks`; `git diff --check` passed.
-- Built and installed the standalone `cacheslide-vllm` 0.2.0 wheel; the current
-  tree no longer ships the legacy engine, CUDA sources or build system.
-- Loaded the installed package from outside the repository, independently of
-  `src/`, and ran its complete CPU workflow successfully.
-- The installed `cacheslide check-engine` command verified all **26** audited
-  source fingerprints at `98dff2a81d747d1dba01a47f939f48c3526d4206`.
-- Ran the root `run_cacheslide_benchmark.sh` from outside the repository:
-  two real optimizer steps, CCPE calibration, 15 requests including seven reuse
-  requests, and four decode steps per request (`--max-tokens 5`).
-- Verified configuration/policy/CLI/workflow imports with Torch, safetensors and
-  vLLM explicitly blocked. Planning and help do not allocate GPU memory.
+- **423 tests passed, with no skips**, using the exact vLLM source checkout.
+  Ruff passed for source/tests/benchmarks; `git diff --check` passed.
+- Built and installed the **0.3.0 wheel** into an independent target directory.
+  Its strict CPU workflow ran successfully from outside the repository,
+  independently of the source-tree import path.
+- Strict one-command CPU smoke completed: five requests, two reuse attempts,
+  one cache hit, and two guarded positional fallbacks (shifted recompute and
+  shifted reuse). Same-context logits agree; shifted fallback logits were
+  checked against full plain CoPE. The installed wheel reproduced those counts.
+  This does **not** report shifted reuse success.
+- The explicit `mixed_bias_override` / `calibration_layer=1` smoke completed:
+  five requests, two reuse hits, no fallback, three decode steps per request,
+  and same-context logits agreement. This verifies that engineering variant's
+  execution, not shifted-request semantic equivalence or model quality.
+- Both smoke modes performed real optimizer updates, calibrated real contextual
+  traces, used the actual packed-page CPU adapter, and reported no timing ratio,
+  no native vLLM execution and no GPU-performance claim.
 
-The native runner selection defaults to V2. CPU lifecycle tests execute selected
-actual upstream admission/removal methods and inspect the audited model call
-boundary, in addition to integration mocks. They cover original-prompt identity,
-full generated-history replay after preemption, context cleanup on errors/dummy
-passes, retirement, and subsequent decode. These checks are not a CUDA engine
-startup test.
+These results supersede the earlier 311-test / 0.2.0-wheel snapshot.
 
-The six-layer synthetic GQA fixture performs real next-token CE adapter updates
-and profile calibration. Tests cover unchanged and shifted non-prefix contexts,
-selected-row execution, WCA promotion/input-state restoration, and multiple decode
-steps. The actual packed-page CPU adapter and dense reference agree bit-for-bit
-on logits and gathered per-layer K/V in the paired tests. These fixtures are not
-trained language models and do not establish task quality.
+## Regression coverage
 
-Fault tests cover corrupt/checksummed malformed snapshots, disk-write failures,
-interrupted population, dtype identity changes, in-place residual mutation during
-a failed reuse attempt, incomplete cache cleanup, asynchronous selected writes,
-load completion, native slot ownership, and request retirement. Benchmark tests
-reject stale receipts and suppress ratios for cache misses or fallback.
+| Boundary | Evidence |
+| --- | --- |
+| CoPE causal sigmoid gates, GQA, interpolation and gradients | `test_position.py`, including integer-knot gradients and cumulative-sum roundoff |
+| Strict canonical/current path validity and post-gate selected visibility | `test_attention_policies.py`; shared `cope_attention` transforms, not duplicated runtime math |
+| Genuine full-context calibration, joint histograms, artifact identity and budgets | `test_profiles.py`, `test_position.py` |
+| Ordered chunk ID/role template with variable dynamic content/length | `test_contracts.py` |
+| Literal first-layer WCA, raw/previous-layer weights, literal cosine gate and transactional failures | `test_wca.py`, `test_runtime_failures.py` |
+| Whole-prefill invalid-position recovery; clear every profile; no partial publication or false cache hit | `test_runtime_failures.py::test_invalid_hybrid_positions_retry_plain_cope_and_do_not_publish` |
+| Load-first native in-place writes and pending-load relocation; sidecars, source holes and selected-page counts | `test_paged.py`, `test_runtime_paged.py` |
+| Pins, shared slots, async writes, retirement and device-completion publication, including decode | `test_slide.py`, `test_paged.py`; CUDA event behavior uses controlled CPU doubles |
+| Request isolation, dense/paged parity, promotion input-state restoration and decode continuity | `test_runtime.py`, `test_runtime_paged.py`, `test_runtime_replay.py` |
+| Snapshot corruption, interrupted population, disk failure, restart and capacity accounting | `test_storage.py`, `test_runtime_failures.py` |
+| V1/V2 source/lifecycle contracts, preemption replay and setup rejection | Fingerprint/AST and integration tests with the exact upstream checkout |
+| Standard-library-only planning/help, caller-cwd safety, isolated explicit installation and stage failures | `test_package_boundaries.py`, `test_workflow.py` |
+| Request-bound hit receipts and suppression of invalid ratios | CLI/benchmark tests and native workflow validation |
 
-Selected-write tests additionally check pinned canonical mirrors, atomic
-pre-mutation rejection, pin/write races, retirement during late completion, and
-event completion without holding the map mutex. Device-event ordering is tested
-using controlled CPU event doubles; that does not establish CUDA throughput.
+The native contract is vLLM **0.29.0**, commit
+`98dff2a81d747d1dba01a47f939f48c3526d4206`, with 26 audited source fingerprints.
+V2 is default; V1 is opt-in. Set `CACHESLIDE_VLLM_SOURCE` to that checkout for
+source-dependent tests; otherwise they explicitly skip. CPU lifecycle tests
+exercise selected actual upstream methods as well as mocks. Neither source
+verification nor a CPU event double is a CUDA engine startup test.
 
-CoPE regression tests retain gate gradients at integer contextual positions;
-reference training also preserves the native checkpoint's output logit scale.
-Native HF overrides must preserve trained embedding/LM-head tying and reject
-unsupported projection biases, activations and model families before loading.
-The one-command workflow preserves stage logs on failure and rejects invalid
-reuse receipts; it does not substitute a reference backend for native failures.
+The tiny six-layer GQA checkpoint is random and the adapter receives only a few
+updates. Generated-token agreement is a consistency test, not dataset answer F1.
+Some integration fixtures explicitly choose engineering variants to exercise
+nonempty WCA selection; they must not be read as default strict-mode results.
 
-## Not yet established
+## Not established or not implemented
 
-- Native CUDA engine startup and end-to-end GPU generation.
-- Representative model quality after CoPE training or large-model TTFT/QPS gains.
+- Native CUDA startup/end-to-end generation and representative trained-model
+  accuracy, TTFT, concurrent QPS or the paper's multi-GPU/beam results.
 - A fused contextual-attention kernel or scalable long-context CCPE profiles.
-- Reduced native vLLM block-pool reservations/admission capacity.
-- Sustained device-level SSD write amplification or concurrent-serving gains.
+- A physically integrated mutable dirty-GPU-page SSD spill/writeback path,
+  combined sequential dirty-page overwrites, or a fully decoupled H2D pipeline.
+- Native vLLM pool release, smaller reserved pool or increased admission capacity.
+- Sustained device-level SSD write amplification. Managed page/file byte counts
+  and advisory selected-count eviction order are not hardware WAF measurements.
 
-The available GPU server's vLLM development build is outside the pinned stable
-source contract; it was not relabeled or modified to bypass validation. The
-official stable Linux wheel was downloaded locally and its publisher SHA-256
-and all 26 source fingerprints passed. Transfer to the GPU host was interrupted;
-no stable environment or CUDA run was completed. The existing environment also
-has different exact versions of FlashInfer, CUTLASS DSL and QuACK; these must be
-resolved in a separate environment rather than ignored. See the
-[design boundaries](design.md) before interpreting the implementation as a
-reproduction of the paper's reported performance.
+The available server's development vLLM build is outside the stable source
+contract. Prior local verification of the official Linux wheel did not establish
+an installed stable GPU environment or a successful CUDA run. No existing server
+environment is relabeled compatible, and native failure never switches to a CPU
+benchmark. [Design](design.md) documents the remaining implementation boundaries.

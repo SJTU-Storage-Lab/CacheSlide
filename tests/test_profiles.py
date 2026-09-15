@@ -22,10 +22,16 @@ def tiny_artifacts(tmp_path):
     model_dir = tmp_path / "model"
     model_dir.mkdir()
     config = {
-        "model_type": "llama", "hidden_size": 8, "intermediate_size": 12,
-        "num_hidden_layers": 2, "num_attention_heads": 2,
-        "num_key_value_heads": 1, "vocab_size": 24, "rms_norm_eps": 1e-6,
-        "max_position_embeddings": 32, "rope_theta": 10000.0,
+        "model_type": "llama",
+        "hidden_size": 8,
+        "intermediate_size": 12,
+        "num_hidden_layers": 2,
+        "num_attention_heads": 2,
+        "num_key_value_heads": 1,
+        "vocab_size": 24,
+        "rms_norm_eps": 1e-6,
+        "max_position_embeddings": 32,
+        "rope_theta": 10000.0,
         "tie_word_embeddings": False,
     }
     (model_dir / "config.json").write_text(json.dumps(config))
@@ -34,45 +40,71 @@ def tiny_artifacts(tmp_path):
     def random(*shape):
         return torch.randn(*shape, generator=generator) * 0.2
 
-    weights = {"model.embed_tokens.weight": random(24, 8),
-               "model.norm.weight": torch.ones(8),
-               "lm_head.weight": random(24, 8)}
+    weights = {
+        "model.embed_tokens.weight": random(24, 8),
+        "model.norm.weight": torch.ones(8),
+        "lm_head.weight": random(24, 8),
+    }
     for layer in range(2):
         prefix = f"model.layers.{layer}."
         weights[prefix + "input_layernorm.weight"] = torch.ones(8)
         weights[prefix + "post_attention_layernorm.weight"] = torch.ones(8)
-        for name, shape in {"q_proj": (8, 8), "k_proj": (4, 8),
-                            "v_proj": (4, 8), "o_proj": (8, 8)}.items():
+        for name, shape in {
+            "q_proj": (8, 8),
+            "k_proj": (4, 8),
+            "v_proj": (4, 8),
+            "o_proj": (8, 8),
+        }.items():
             weights[prefix + f"self_attn.{name}.weight"] = random(*shape)
-        for name, shape in {"gate_proj": (12, 8), "up_proj": (12, 8),
-                            "down_proj": (8, 12)}.items():
+        for name, shape in {
+            "gate_proj": (12, 8),
+            "up_proj": (12, 8),
+            "down_proj": (8, 12),
+        }.items():
             weights[prefix + f"mlp.{name}.weight"] = random(*shape)
     save_file(weights, str(model_dir / "model.safetensors"))
     adapters = [AttentionAdapter(config, rank=2, max_positions=16) for _ in range(2)]
     optimizer = torch.optim.SGD([p for a in adapters for p in a.parameters()], lr=0.1)
-    loss = sum((a.cope.position_embeddings - 0.2).square().mean()
-               + (a.qkv_b - 0.1).square().mean() for a in adapters)
+    loss = sum(
+        (a.cope.position_embeddings - 0.2).square().mean()
+        + (a.qkv_b - 0.1).square().mean()
+        for a in adapters
+    )
     loss.backward()
     optimizer.step()
-    adapter_dir = save_adapter(tmp_path / "adapter", model_dir, adapters,
-                               training_steps=1, training_tokens=6,
-                               losses=[float(loss.detach())])
+    adapter_dir = save_adapter(
+        tmp_path / "adapter",
+        model_dir,
+        adapters,
+        training_steps=1,
+        training_tokens=6,
+        losses=[float(loss.detach())],
+    )
     return model_dir, adapter_dir, AdapterBundle(adapter_dir, model_dir)
 
 
 def make_plan(dynamic=(3,), *, fixed=(5, 6), task_id="qa"):
     split = 2 + len(dynamic)
     tokens = (1, 2, *dynamic, *fixed)
-    return RequestPlan.parse({
-        "version": 1, "operation": "calibrate", "namespace": "test",
-        "task_id": task_id,
-        "chunks": [
-            {"id": "document-a", "role": "reuse", "start": 0, "end": 2},
-            {"id": "question", "role": "recompute", "start": 2, "end": split},
-            {"id": "document-b", "role": "reuse", "start": split,
-             "end": len(tokens)},
-        ],
-    }, tokens)
+    return RequestPlan.parse(
+        {
+            "version": 1,
+            "operation": "calibrate",
+            "namespace": "test",
+            "task_id": task_id,
+            "chunks": [
+                {"id": "document-a", "role": "reuse", "start": 0, "end": 2},
+                {"id": "question", "role": "recompute", "start": 2, "end": split},
+                {
+                    "id": "document-b",
+                    "role": "reuse",
+                    "start": split,
+                    "end": len(tokens),
+                },
+            ],
+        },
+        tokens,
+    )
 
 
 def rewrite_manifest(path, update=None):
@@ -88,19 +120,25 @@ def rewrite_tensors(path, update):
     tensors = load_file(str(path / "profiles.safetensors"))
     update(tensors)
     save_file(tensors, str(path / "profiles.safetensors"))
-    rewrite_manifest(path, lambda meta: meta.update(
-        tensors_sha256=file_sha256(path / "profiles.safetensors")))
+    rewrite_manifest(
+        path,
+        lambda meta: meta.update(
+            tensors_sha256=file_sha256(path / "profiles.safetensors")
+        ),
+    )
 
 
 def test_calibrate_genuine_contexts_canonical_lookup_and_safe_export(
-    tiny_artifacts, tmp_path,
+    tiny_artifacts,
+    tmp_path,
 ):
     from cacheslide_vllm.reference import ReferenceLlama
 
     model_dir, adapter_dir, adapter = tiny_artifacts
     short, long = make_plan(), make_plan((3, 4, 8))
-    output = calibrate_profiles(model_dir, adapter_dir, [short, short, long],
-                                tmp_path / "profiles")
+    output = calibrate_profiles(
+        model_dir, adapter_dir, [short, short, long], tmp_path / "profiles"
+    )
     bundle = ProfileBundle(output, adapter.identity)
     assert bundle.identity == digest(bundle.metadata)
     profile = bundle.get(long, 0)
@@ -116,12 +154,17 @@ def test_calibrate_genuine_contexts_canonical_lookup_and_safe_export(
 
     def observer(layer, query, key, cope):
         fixed = torch.tensor(short.fixed_indices)
-        full = cope.position_trace(query, key, torch.arange(5),
-                                   checkpoint_id=adapter.identity)
+        full = cope.position_trace(
+            query, key, torch.arange(5), checkpoint_id=adapter.identity
+        )
         observed[layer] = full.project(fixed, fixed).positions
         if layer == 0:
-            omitted = cope.position_trace(query[fixed], key[fixed], torch.arange(4),
-                                          checkpoint_id=adapter.identity).positions
+            omitted = cope.position_trace(
+                query[fixed],
+                key[fixed],
+                torch.arange(4),
+                checkpoint_id=adapter.identity,
+            ).positions
             assert not torch.allclose(observed[layer], omitted)
 
     with torch.inference_mode():
@@ -129,9 +172,12 @@ def test_calibrate_genuine_contexts_canonical_lookup_and_safe_export(
     for layer in range(2):
         profile = bundle.get(long, layer)
         torch.testing.assert_close(profile.canonical_positions, observed[layer])
-        selected = profile.lookup(profile.chunks, torch.tensor([3, 1]),
-                                  checkpoint_id=adapter.identity,
-                                  trained_profile_version="v1")
+        selected = profile.lookup(
+            profile.chunks,
+            torch.tensor([3, 1]),
+            checkpoint_id=adapter.identity,
+            trained_profile_version="v1",
+        )
         torch.testing.assert_close(selected, observed[layer][:, [3, 1]])
     assert bundle.get(make_plan(fixed=(5, 9)), 0) is None
     assert bundle.get(make_plan(task_id="different"), 0) is None
@@ -141,15 +187,17 @@ def test_calibrate_genuine_contexts_canonical_lookup_and_safe_export(
         assert private_name not in text
     with safe_open(output / "profiles.safetensors", framework="pt") as stored:
         assert len(stored.keys()) == 6
-        assert all(key.rsplit(".", 1)[-1] in
-                   {"positions", "query_positions", "key_positions"}
-                   for key in stored.keys())
+        assert all(
+            key.rsplit(".", 1)[-1] in {"positions", "query_positions", "key_positions"}
+            for key in stored.keys()
+        )
     with pytest.raises(FileExistsError):
         calibrate_profiles(model_dir, adapter_dir, [short], output)
 
 
-def test_budget_rejected_before_model_or_trace_allocation(tiny_artifacts, tmp_path,
-                                                        monkeypatch):
+def test_budget_rejected_before_model_or_trace_allocation(
+    tiny_artifacts, tmp_path, monkeypatch
+):
     from cacheslide_vllm.reference import ReferenceLlama
 
     model_dir, adapter_dir, _ = tiny_artifacts
@@ -160,8 +208,13 @@ def test_budget_rejected_before_model_or_trace_allocation(tiny_artifacts, tmp_pa
     monkeypatch.setattr(ReferenceLlama, "from_checkpoint", forbidden)
     # Each individual trace fits; the two-layer aggregate and source logits do not.
     with pytest.raises(ValueError, match="source traces.*max_elements"):
-        calibrate_profiles(model_dir, adapter_dir, [make_plan(), make_plan()],
-                           tmp_path / "too-big", max_elements=100)
+        calibrate_profiles(
+            model_dir,
+            adapter_dir,
+            [make_plan(), make_plan()],
+            tmp_path / "too-big",
+            max_elements=100,
+        )
     assert not (tmp_path / "too-big").exists()
 
 
@@ -185,10 +238,13 @@ def test_bundle_adapter_checksums_and_aggregate_budget(tiny_artifacts, tmp_path)
         ProfileBundle(output, adapter.identity)
 
 
-@pytest.mark.parametrize("corruption", ["nan", "bound", "causal", "shape",
-                                         "dtype", "ordinals", "extra"])
+@pytest.mark.parametrize(
+    "corruption", ["nan", "bound", "causal", "shape", "dtype", "ordinals", "extra"]
+)
 def test_bundle_rejects_corrupt_tensor_layout_even_with_new_checksum(
-    tiny_artifacts, tmp_path, corruption,
+    tiny_artifacts,
+    tmp_path,
+    corruption,
 ):
     model_dir, adapter_dir, adapter = tiny_artifacts
     output = calibrate_profiles(model_dir, adapter_dir, [make_plan()], tmp_path / "p")
@@ -215,10 +271,13 @@ def test_bundle_rejects_corrupt_tensor_layout_even_with_new_checksum(
         ProfileBundle(output, adapter.identity)
 
 
-@pytest.mark.parametrize("corruption", ["format", "layer", "chunks", "count",
-                                         "width", "unknown"])
+@pytest.mark.parametrize(
+    "corruption", ["format", "layer", "chunks", "count", "width", "unknown"]
+)
 def test_bundle_rejects_invalid_manifest_even_with_new_checksum(
-    tiny_artifacts, tmp_path, corruption,
+    tiny_artifacts,
+    tmp_path,
+    corruption,
 ):
     model_dir, adapter_dir, adapter = tiny_artifacts
     output = calibrate_profiles(model_dir, adapter_dir, [make_plan()], tmp_path / "p")
@@ -245,16 +304,28 @@ def test_bundle_rejects_invalid_manifest_even_with_new_checksum(
 
 def test_get_checks_ordered_identities_and_profile_version(tiny_artifacts, tmp_path):
     model_dir, adapter_dir, adapter = tiny_artifacts
-    output = calibrate_profiles(model_dir, adapter_dir, [make_plan()], tmp_path / "p",
-                                trained_profile_version="trained-v2")
+    output = calibrate_profiles(
+        model_dir,
+        adapter_dir,
+        [make_plan()],
+        tmp_path / "p",
+        trained_profile_version="trained-v2",
+    )
     profile = ProfileBundle(output, adapter.identity).get(make_plan(), 0)
     with pytest.raises(ValueError, match="version"):
-        profile.lookup(profile.chunks, torch.arange(4), checkpoint_id=adapter.identity,
-                       trained_profile_version="v1")
+        profile.lookup(
+            profile.chunks,
+            torch.arange(4),
+            checkpoint_id=adapter.identity,
+            trained_profile_version="v1",
+        )
     with pytest.raises(ValueError, match="ordered chunk"):
-        profile.lookup(tuple(reversed(profile.chunks)), torch.arange(4),
-                       checkpoint_id=adapter.identity,
-                       trained_profile_version="trained-v2")
+        profile.lookup(
+            tuple(reversed(profile.chunks)),
+            torch.arange(4),
+            checkpoint_id=adapter.identity,
+            trained_profile_version="trained-v2",
+        )
     malformed = replace(make_plan(), chunks=tuple(reversed(make_plan().chunks)))
     with pytest.raises(ValueError, match="partition"):
         calibrate_profiles(model_dir, adapter_dir, [malformed], tmp_path / "bad")

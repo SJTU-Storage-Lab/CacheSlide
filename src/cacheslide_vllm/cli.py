@@ -121,7 +121,9 @@ def _engine_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-tokens", type=_positive, default=1)
     parser.add_argument("--dtype", choices=("float16", "bfloat16"), default="bfloat16")
     parser.add_argument(
-        "--model-runner", choices=("v2", "v1"), default="v2",
+        "--model-runner",
+        choices=("v2", "v1"),
+        default="v2",
         help="native vLLM runner (v2 is the 0.29.0 default; v1 is legacy opt-in)",
     )
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.8)
@@ -129,7 +131,12 @@ def _engine_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--disk-budget-bytes", type=_positive, default=2_147_483_648)
     parser.add_argument("--max-profile-elements", type=_positive, default=4_194_304)
     parser.add_argument("--query-chunk-size", type=_positive, default=64)
-    parser.add_argument("--calibration-layer", type=_nonnegative, default=1)
+    parser.add_argument("--calibration-layer", type=_nonnegative, default=0)
+    parser.add_argument(
+        "--ccpe-position-policy",
+        choices=("strict_contextual", "mixed_bias_override"),
+        default="strict_contextual",
+    )
     parser.add_argument("--correction-fraction", type=float, default=0.26)
     parser.add_argument(
         "--convergence-mode",
@@ -228,6 +235,7 @@ def engine_kwargs(args: argparse.Namespace) -> dict:
         "convergence_mode": args.convergence_mode,
         "weight_update": args.weight_update,
         "selected_attention": args.selected_attention,
+        "ccpe_position_policy": args.ccpe_position_policy,
     }
     if args.profiles:
         settings["profile_path"] = str(Path(args.profiles).resolve())
@@ -426,6 +434,7 @@ def _benchmark_runs(engine, sampling, args, cases, seeds):
                 "baseline_seconds": baseline["elapsed_seconds"],
                 "reuse_seconds": reused["elapsed_seconds"],
                 "baseline_metrics_valid": baseline["metrics_valid"],
+                "baseline_fallback": baseline["runtime_metrics"].get("fallback"),
                 "reuse_metrics_valid": reused["metrics_valid"],
                 "reuse_cache_hit": reused["runtime_metrics"].get("cache_hit"),
                 "reuse_fallback": reused["runtime_metrics"].get("fallback"),
@@ -478,7 +487,10 @@ def benchmark(args: argparse.Namespace, cases: list[InputCase]) -> dict:
         records, pairs = _benchmark_runs(engine, sampling, args, cases, seeds)
     baseline_mean = statistics.mean(pair["baseline_seconds"] for pair in pairs)
     reuse_mean = statistics.mean(pair["reuse_seconds"] for pair in pairs)
-    baseline_valid = all(pair["baseline_metrics_valid"] for pair in pairs)
+    baseline_valid = all(
+        pair["baseline_metrics_valid"] and pair["baseline_fallback"] is False
+        for pair in pairs
+    )
     reuse_valid = all(
         pair["reuse_metrics_valid"]
         and pair["reuse_cache_hit"] is True

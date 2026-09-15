@@ -116,6 +116,45 @@ class LayerSlotMap:
             self._check_open()
             return dict(self._map)
 
+    def page_metadata(
+        self, page_size: int, selected_tokens: Iterable[int]
+    ) -> tuple[dict[str, int | bool], ...]:
+        """Snapshot physical selected-token counts and page-level guards.
+
+        This is not an eviction reservation or backing-store dirty tracking.
+        ``dirty`` uses the paper's selected-token-presence definition. A caller
+        still needs coherent write-back/residency ownership before any eviction.
+        """
+        if type(page_size) is not int or page_size < 1:
+            raise ValueError("page_size must be a positive integer")
+        selected = set(selected_tokens)
+        with self._mutex:
+            self._check_open()
+            if any(type(token) is not int for token in selected) or not (
+                selected.issubset(self._map)
+            ):
+                raise ValueError("selected tokens must have current logical mappings")
+            mapped = Counter(slot // page_size for slot in self._map.values())
+            counts = Counter(self._map[token] // page_size for token in selected)
+            shared = {slot // page_size for slot in self._shared}
+            pinned = {slot // page_size for slot, count in self._pins.items() if count}
+            inflight = {
+                slot // page_size for slot, count in self._inflight.items() if count
+            }
+            return tuple(
+                {
+                    "page_id": page,
+                    "mapped_tokens": mapped[page],
+                    "selected_count": counts[page],
+                    "dirty": counts[page] > 0,
+                    "shared": page in shared,
+                    "pinned": page in pinned,
+                    "inflight": page in inflight,
+                    "spill_eligible": page not in shared | pinned | inflight,
+                }
+                for page in sorted(mapped)
+            )
+
     @contextmanager
     def pin_slots(self, slots: Iterable[int]) -> Iterator[None]:
         unique = set(slots)
@@ -260,6 +299,10 @@ class LayerSlotMap:
             self._pending_tokens.update(updates)
             guarded = set(source.values()) | set(destinations.values())
             self._inflight.update(guarded)
+            # Loading sources may still be read, but actual destinations must
+            # reject new readers until the writer's completion (also in-place).
+            writing_slots = set(destinations.values())
+            self._writes.update(writing_slots)
             if load_pending:
                 # These guards outlive selected-write completion if loading continues.
                 loading_slots = set(source.values())
@@ -307,6 +350,7 @@ class LayerSlotMap:
                 completion_error = exc
             finally:
                 with self._mutex:
+                    self._writes.subtract(writing_slots)
                     self._inflight.subtract(guarded)
                     self._pending_tokens.difference_update(updates)
             if completion_error is not None:
@@ -330,7 +374,12 @@ class LayerSlotMap:
     def allocate_decode(self, token: int) -> int:
         with self._mutex:
             self._check_open()
-            if type(token) is not int or token < 0 or token in self._map:
+            if (
+                type(token) is not int
+                or token < 0
+                or token in self._map
+                or token in self._pending_tokens
+            ):
                 raise ValueError("decode token must be a new nonnegative position")
             valid = set(self._map.values())
             eligible = sorted(
@@ -349,6 +398,46 @@ class LayerSlotMap:
             self._map[token] = slot
             return slot
 
+    def _decode_destination(
+        self, token: int, physical_slot: int, *, reuse_vacated: bool
+    ) -> int:
+        """Validate and choose a native destination while the map mutex is held."""
+        self._check_open()
+        if (
+            type(token) is not int
+            or token < 0
+            or token in self._map
+            or token in self._pending_tokens
+        ):
+            raise ValueError("decode token must be a new nonnegative position")
+        if (
+            type(physical_slot) is not int
+            or not 0 <= physical_slot < self.allocation_floor
+        ):
+            raise ValueError("native decode slot must be below allocation_floor")
+        if (
+            physical_slot in self._map.values()
+            or physical_slot in self._shared
+            or self._pins[physical_slot]
+            or self._inflight[physical_slot]
+        ):
+            raise CacheCapacityError("native decode slot is valid or guarded")
+        selected_slot = physical_slot
+        if reuse_vacated:
+            valid = set(self._map.values())
+            eligible = sorted(
+                slot
+                for slot in self._vacated
+                if slot < self.allocation_floor
+                and slot not in valid
+                and slot not in self._shared
+                and not self._pins[slot]
+                and not self._inflight[slot]
+            )
+            if eligible:
+                selected_slot = eligible[0]
+        return selected_slot
+
     def bind_decode(
         self, token: int, physical_slot: int, *, reuse_vacated: bool = False
     ) -> int:
@@ -362,38 +451,57 @@ class LayerSlotMap:
         Caller-side synchronization must cover actual writes and gathers.
         """
         with self._mutex:
-            self._check_open()
-            if type(token) is not int or token < 0 or token in self._map:
-                raise ValueError("decode token must be a new nonnegative position")
-            if (
-                type(physical_slot) is not int
-                or not 0 <= physical_slot < self.allocation_floor
-            ):
-                raise ValueError("native decode slot must be below allocation_floor")
-            if (
-                physical_slot in self._map.values()
-                or physical_slot in self._shared
-                or self._pins[physical_slot]
-                or self._inflight[physical_slot]
-            ):
-                raise CacheCapacityError("native decode slot is valid or guarded")
-            selected_slot = physical_slot
-            if reuse_vacated:
-                valid = set(self._map.values())
-                eligible = sorted(
-                    slot
-                    for slot in self._vacated
-                    if slot < self.allocation_floor
-                    and slot not in valid
-                    and slot not in self._shared
-                    and not self._pins[slot]
-                    and not self._inflight[slot]
-                )
-                if eligible:
-                    selected_slot = eligible[0]
+            selected_slot = self._decode_destination(
+                token, physical_slot, reuse_vacated=reuse_vacated
+            )
             self._vacated.discard(selected_slot)
             self._map[token] = selected_slot
             return selected_slot
+
+    @contextmanager
+    def decode_write_guard(
+        self, token: int, physical_slot: int, *, reuse_vacated: bool = False
+    ) -> Iterator[int]:
+        """Reserve decode and mirror destinations, then publish completed KV.
+
+        Selection and both write reservations are atomic. The new token remains
+        absent from the public mapping until successful exit; readers cannot pin
+        it while copies are pending. The caller must wait for actual device
+        completion inside the body. No map mutex is held across that wait.
+
+        These writes may be nontransactional, so an exception retires the entire
+        map before releasing reservations. Unrelated existing mappings and pins
+        remain usable during a successful pending write. ``bind_decode`` remains
+        available for callers that already synchronized external writes.
+        """
+        with self._mutex:
+            selected_slot = self._decode_destination(
+                token, physical_slot, reuse_vacated=reuse_vacated
+            )
+            guarded = {selected_slot, physical_slot}
+            generation = self._generation
+            self._vacated.discard(selected_slot)
+            self._pending_tokens.add(token)
+            self._writes.update(guarded)
+            self._inflight.update(guarded)
+        try:
+            yield selected_slot
+            with self._mutex:
+                if self._closed or generation != self._generation:
+                    raise StaleCompletionError(
+                        "decode write completed for a retired layer"
+                    )
+                self._map[token] = selected_slot
+        except BaseException:
+            with self._mutex:
+                if not self._closed:
+                    self.invalidate()
+            raise
+        finally:
+            with self._mutex:
+                self._writes.subtract(guarded)
+                self._inflight.subtract(guarded)
+                self._pending_tokens.discard(token)
 
     def invalidate(self) -> None:
         with self._mutex:
