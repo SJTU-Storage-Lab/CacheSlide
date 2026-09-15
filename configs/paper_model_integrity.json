@@ -1,0 +1,73 @@
+{
+  "repo": "mistralai/Mistral-7B-Instruct-v0.2",
+  "revision": "63a8b081895390a26e140280378bc85ec8bce07a",
+  "source": "https://huggingface.co/api/models/mistralai/Mistral-7B-Instruct-v0.2/revision/63a8b081895390a26e140280378bc85ec8bce07a?blobs=true",
+  "files": [
+    {
+      "path": "models/Mistral-7B-Instruct-v0.2/README.md",
+      "size": 5540,
+      "sha256": null,
+      "git_blob_sha1": "995aeafefffe388baf7e8722f9f97d1831c550b7"
+    },
+    {
+      "path": "models/Mistral-7B-Instruct-v0.2/config.json",
+      "size": 596,
+      "sha256": null,
+      "git_blob_sha1": "c0519dc5f5cc99c2238a453da18994599c898b66"
+    },
+    {
+      "path": "models/Mistral-7B-Instruct-v0.2/generation_config.json",
+      "size": 111,
+      "sha256": null,
+      "git_blob_sha1": "cb0c9b6c64cf786052efdd1a4ae597337b2f2708"
+    },
+    {
+      "path": "models/Mistral-7B-Instruct-v0.2/model-00001-of-00003.safetensors",
+      "size": 4943162336,
+      "sha256": "63654d601820b88b1fa8b4a98df5714f700fbc5b3df2cc4ecbabdced35096d31",
+      "git_blob_sha1": null
+    },
+    {
+      "path": "models/Mistral-7B-Instruct-v0.2/model-00002-of-00003.safetensors",
+      "size": 4999819336,
+      "sha256": "a42716540ecb2385d371f2109835921ff535406cac8fe8ff28f2f0b5fc7895bd",
+      "git_blob_sha1": null
+    },
+    {
+      "path": "models/Mistral-7B-Instruct-v0.2/model-00003-of-00003.safetensors",
+      "size": 4540516344,
+      "sha256": "5f86e15cb3ed9078e30ae6e72445e109d0e337d9cde59b9aeea4ce8e44e54a5d",
+      "git_blob_sha1": null
+    },
+    {
+      "path": "models/Mistral-7B-Instruct-v0.2/model.safetensors.index.json",
+      "size": 25125,
+      "sha256": null,
+      "git_blob_sha1": "361fa9d25a7f791e18ab531b3468ff8f2010642e"
+    },
+    {
+      "path": "models/Mistral-7B-Instruct-v0.2/special_tokens_map.json",
+      "size": 414,
+      "sha256": null,
+      "git_blob_sha1": "451134b2ddc2e78555d1e857518c54b4bdc2e87d"
+    },
+    {
+      "path": "models/Mistral-7B-Instruct-v0.2/tokenizer.json",
+      "size": 1795188,
+      "sha256": null,
+      "git_blob_sha1": "1e9f59c515a01088e1f7f72b68ab99f92d15fb96"
+    },
+    {
+      "path": "models/Mistral-7B-Instruct-v0.2/tokenizer.model",
+      "size": 493443,
+      "sha256": "dadfd56d766715c61d2ef780a525ab43b8e6da4de6865bda3d95fdef5e134055",
+      "git_blob_sha1": null
+    },
+    {
+      "path": "models/Mistral-7B-Instruct-v0.2/tokenizer_config.json",
+      "size": 2103,
+      "sha256": null,
+      "git_blob_sha1": "f63c0374bad221568938f908e397a38d9f0dfac0"
+    }
+  ]
+}

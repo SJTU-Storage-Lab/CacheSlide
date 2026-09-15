@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "purpose": "CacheSlide FAST26 reproduction asset acquisition; not proof of result reproduction",
+  "models": [
+    {
+      "name": "Mistral-7B-Instruct-v0.2",
+      "repo": "mistralai/Mistral-7B-Instruct-v0.2",
+      "kind": "model",
+      "revision": "63a8b081895390a26e140280378bc85ec8bce07a",
+      "license": "Apache-2.0",
+      "include": ["README.md", "config.json", "generation_config.json", "model-*.safetensors", "model.safetensors.index.json", "special_tokens_map.json", "tokenizer.json", "tokenizer.model", "tokenizer_config.json"],
+      "paper_identity": "Engineering first-run candidate: paper names Mistral-7B without an exact checkpoint/version. Full-attention v0.2 is compatible; do not claim it is the authors' checkpoint."
+    }
+  ],
+  "datasets": [
+    {
+      "name": "HotpotQA",
+      "repo": "hotpotqa/hotpot_qa",
+      "kind": "dataset",
+      "revision": "1908d6afbbead072334abe2965f91bd2709910ab",
+      "license": "CC-BY-SA-4.0",
+      "include": ["README.md", "distractor/*.parquet"],
+      "paper_identity": "Official HotpotQA distractor train and validation. Exact paper sample IDs and Reflexion traces are not published in the paper."
+    },
+    {
+      "name": "SWE-bench",
+      "repo": "princeton-nlp/SWE-bench",
+      "kind": "dataset",
+      "revision": "e48e2bd1e9fecd5bbd641e9414ac59da9f2e69f6",
+      "license": "See upstream README and each source repository license",
+      "include": ["README.md", "data/*.parquet"],
+      "paper_identity": "Paper calls this SWE-Agent-Bench but cites SWE-bench. Metadata only; generated patches must be evaluated in isolated official test environments, never scored as resolved by text similarity."
+    }
+  ],
+  "archives": [
+    {
+      "name": "Multi-Session-Chat",
+      "filename": "msc_v0.1.tar.gz",
+      "url": "https://parl.ai/downloads/msc/msc_v0.1.tar.gz",
+      "sha256": "e640e37cf4317cd09fc02a4cd57ef130a185f23635f4003b0cee341ffcb45e60",
+      "max_bytes": 2147483648,
+      "source": "https://github.com/facebookresearch/ParlAI/blob/main/parlai/tasks/msc/build.py",
+      "license": "See upstream dataset license; download does not grant new rights",
+      "paper_identity": "Official MSC v0.1; archived only, not automatically extracted or executed."
+    }
+  ]
+}

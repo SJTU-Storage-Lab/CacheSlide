@@ -12,6 +12,7 @@ readme = "README.md"
 dependencies = ["torch>=2.9", "safetensors>=0.5"]
 
 [project.optional-dependencies]
+paper = ["tokenizers==0.22.2", "pyarrow==21.0.0"]
 engine = ["sglang==0.5.19"]
 vllm = ["vllm==0.29.0"]
 test = ["pytest>=8,<10", "ruff>=0.9", "numpy>=1.26"]
