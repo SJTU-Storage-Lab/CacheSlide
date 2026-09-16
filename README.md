@@ -47,6 +47,14 @@ and validates the saved adapter. Add `--download` to explicitly acquire missing
 assets first. It does not install dependencies, manage GPU reservations, or
 claim native-engine results. Stage logs and failures are retained.
 
+## Agent-wait preparation prototype
+
+An optional [agent-wait queue](docs/agent_wait_queue.md) isolates wait-triggered
+work, FIFO demand deduplication and ready-only host handoff from model execution.
+It is a CPU-tested control-plane contract, not an enabled compression backend or
+a demonstrated improvement over budget-window scheduling. Existing CCPE/WCA,
+storage and benchmark paths are unchanged.
+
 ## One-command benchmark
 
 Use Python 3.12 or newer. The launcher preserves caller-relative paths and never downloads model weights.
@@ -108,6 +116,7 @@ These numbers illustrate the schema, not meaningful model text. Training rows ne
 ```text
 src/cacheslide_vllm/
   contracts.py, policy.py, config.py    Data and policies (stdlib only)
+  wait_queue.py                       Opt-in host-ready wait scheduling contract
   position.py, profiles.py, attention.py  CoPE, profiles and shared attention policies
   wca.py                              Request-local selection and KV fusion
   slide.py, paged.py, storage.py        Slot mapping, native arena, RAM/SSD pages

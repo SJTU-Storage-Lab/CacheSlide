@@ -24,7 +24,7 @@ class BlockEngines(importlib.abc.MetaPathFinder):
             raise AssertionError('unexpected engine import: ' + fullname)
 sys.meta_path.insert(0, BlockEngines())
 sys.path.insert(0, sys.argv[1])
-from cacheslide_vllm import cli, config, contracts, policy, workflow
+from cacheslide_vllm import cli, config, contracts, policy, wait_queue, workflow
 assert policy.WCAConfig().correction_fraction == 0.26
 config.CacheSlideSettings('/adapter', '/cache')
 assert cli.parser() and workflow.parser()
