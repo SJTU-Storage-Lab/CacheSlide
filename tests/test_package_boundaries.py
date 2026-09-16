@@ -26,7 +26,7 @@ class BlockEngines(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, BlockEngines())
 sys.path.insert(0, sys.argv[1])
 from cacheslide_vllm import cli, workflow
-from cacheslide_core import config, contracts, policy
+from cacheslide_core import config, contracts, policy, wait_queue
 from cacheslide_sglang import workflow as sglang_workflow, cli as sglang_cli
 assert policy.WCAConfig().correction_fraction == 0.26
 config.CacheSlideSettings('/adapter', '/cache')

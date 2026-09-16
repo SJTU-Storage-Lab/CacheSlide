@@ -43,6 +43,14 @@ and validates the saved adapter. Add `--download` to explicitly acquire missing
 assets first. It does not install dependencies, manage GPU reservations, or
 claim native-engine results. Stage logs and failures are retained.
 
+## Agent-wait preparation prototype
+
+An optional [agent-wait queue](docs/agent_wait_queue.md) isolates wait-triggered
+work, FIFO demand deduplication and ready-only host handoff from model execution.
+It is a CPU-tested control-plane contract, not an enabled compression backend or
+a demonstrated improvement over budget-window scheduling. Existing CCPE/WCA,
+storage and benchmark paths are unchanged.
+
 ## One-command workflow
 
 Use Python 3.12 or newer. The launcher preserves caller-relative paths and never downloads model weights.
@@ -102,6 +110,7 @@ Defaults are `strict_contextual` and `calibration_layer=0` (Algorithm 2's first 
 ```text
 src/cacheslide_core/     Shared contracts, CoPE/CCPE, WCA, SLIDE, storage,
                         reference training and selective runtime
+                        wait_queue.py: opt-in host-ready wait coordinator
 src/cacheslide_sglang/   Pinned plugin/hooks, model/backend, split K/V pool,
                         request receipts, CLI and workflow
 src/cacheslide_vllm/     Retained independent vLLM adapter and commands
